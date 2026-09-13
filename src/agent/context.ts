@@ -106,12 +106,50 @@ export async function buildRepoContext(workspace: string): Promise<{
   return { text: lines.join('\n'), isGit, gitBranch };
 }
 
+/**
+ * The <skills> block is built separately so the system-prompt template stays
+ * readable — and so the index can never leak a full skill body into the prompt.
+ */
+function renderSkillsBlock(input: {
+  skillsIndex?: string;
+  skillsAutoRoute?: boolean;
+}): string {
+  if (!input.skillsIndex) return '';
+
+  const lines: string[] = [
+    '<skills>',
+    'You have specialised skills. To save context, only their names and purposes are listed here — full instructions are loaded on demand.',
+    '',
+    input.skillsIndex,
+    '',
+    'How to use them:',
+    '- If one clearly matches the request and is NOT already loaded, call use_skill(name) ONCE before doing any work, then follow its instructions.',
+  ];
+  if (input.skillsAutoRoute) {
+    lines.push(
+      '- Some turns arrive with a "[skill auto-loaded: ...]" block already injected for you. When that happens do NOT call use_skill again — just follow the instructions in it.',
+    );
+  }
+  lines.push(
+    '- Load at most one skill per task. Never reload a skill already in context.',
+    '- If nothing matches, ignore this block and work normally. Do not force a skill.',
+    '- A skill is guidance, not a cage: if it conflicts with what the code actually needs, do the right thing and say why in one line.',
+    '</skills>',
+    '',
+    '',
+  );
+  return lines.join('\n');
+}
+
 export function buildSystemPrompt(input: {
   modelName: string;
   repoContext: string;
   customInstructions: string;
   toolNames: string[];
   permissionMode: string;
+  /** Compact skill index: name + one-line purpose + token cost. Never full bodies. */
+  skillsIndex?: string;
+  skillsAutoRoute?: boolean;
 }): string {
   return `You are LCA (Local Code Agent), an interactive CLI coding agent built for software engineering.
 You run 100% on the user's own laptop through Ollama — model "${input.modelName}". Nothing is sent to the cloud.
@@ -148,7 +186,7 @@ Permission mode: "${input.permissionMode}" — in "ask" mode the user approves r
 - If you are blocked or need a decision, ask one specific question instead of guessing.
 </output_style>
 
-<local_model_discipline>
+${renderSkillsBlock(input)}<local_model_discipline>
 You are a small model with a limited context window, so be economical:
 - Emit tool calls in the exact JSON schema given. Arguments must be valid JSON strings.
 - Do not wrap tool calls in prose or markdown fences — the harness reads them directly.

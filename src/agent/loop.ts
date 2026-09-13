@@ -4,6 +4,7 @@ import type { PermissionGate } from '../safety/permissions.js';
 import type { ToolRegistry } from '../tools/registry.js';
 import { normalizeArgs } from '../tools/arg-aliases.js';
 import type { UI } from '../ui/ui.js';
+import type { SkillLibrary } from '../skills/library.js';
 import type { SessionState } from '../util/session.js';
 import { compactHistory } from './compact.js';
 import { StreamEcho } from './stream-filter.js';
@@ -17,6 +18,7 @@ export interface AgentDeps {
   config: AgentConfig;
   session: SessionState;
   systemPrompt: string;
+  skills: SkillLibrary | null;
 }
 
 export interface TurnResult {
@@ -53,7 +55,7 @@ export async function runTurn(
   deps: AgentDeps,
   signal: AbortSignal,
 ): Promise<TurnResult> {
-  const { provider, registry, permissions, ui, config, session } = deps;
+  const { provider, registry, permissions, ui, config, session, skills } = deps;
 
   messages.push({ role: 'user', content: userText });
 
@@ -212,6 +214,7 @@ export async function runTurn(
         session,
         ui,
         signal,
+        skills,
       });
       const ms = Date.now() - t0;
       session.totals.toolMs += ms;

@@ -6,7 +6,6 @@ import { AgentRuntime } from '../src/agent/runtime.js';
 import { MockProvider, type MockTurn } from '../src/llm/mock.js';
 import { UI } from '../src/ui/ui.js';
 import type { ToolContext } from '../src/tools/types.js';
-import { ToolRegistry } from '../src/tools/registry.js';
 import { PermissionGate } from '../src/safety/permissions.js';
 import { newSession } from '../src/util/session.js';
 
@@ -77,6 +76,7 @@ export async function makeContext(
       session,
       ui,
       signal: new AbortController().signal,
+      skills: null,
     },
     cleanup: async () => {},
   };
@@ -93,7 +93,6 @@ export async function makeRuntime(
     ui,
     config: cfg,
     provider: new MockProvider(turns),
-    registry: new ToolRegistry(),
     factory: () => new MockProvider(turns),
   });
   return { rt, ui };

@@ -3,6 +3,7 @@ import type { PermissionGate } from '../safety/permissions.js';
 import type { SessionState } from '../util/session.js';
 import type { JsonSchema } from '../llm/types.js';
 import type { UI } from '../ui/ui.js';
+import type { SkillLibrary } from '../skills/library.js';
 
 export interface ToolResult {
   /** What goes back into the model's context. Keep it tight — tokens are scarce locally. */
@@ -20,6 +21,8 @@ export interface ToolContext {
   session: SessionState;
   ui: UI;
   signal: AbortSignal;
+  /** null when the skills system is switched off. */
+  skills: SkillLibrary | null;
 }
 
 export interface Tool {

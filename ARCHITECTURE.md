@@ -1,7 +1,7 @@
 # Architecture
 
-Every file, what it does, and why it exists. ~4,400 lines of TypeScript, **zero runtime
-dependencies** (dev-only: `typescript`, `tsx`, `vitest`, `@types/node`).
+Every file, what it does, and why it exists. ~5,300 lines of TypeScript + 10 skill documents,
+**zero runtime dependencies** (dev-only: `typescript`, `tsx`, `vitest`, `@types/node`).
 
 ---
 
@@ -105,7 +105,19 @@ dependencies** (dev-only: `typescript`, `tsx`, `vitest`, `@types/node`).
 | `src/tools/search.ts`     | 160   | Regex/literal grep in pure TS with glob filtering and result caps.      |
 | `src/tools/bash.ts`       | 139   | `spawn` with shell, timeout kill, output caps, exit code reporting.     |
 | `src/tools/todo.ts`       | 86    | Plan tool; tolerates status words like `done`/`DOING`.                  |
+| `src/tools/use-skill.ts`  | 110   | Loads one skill body on demand; cheap no-op if already loaded; reads bundled resources jailed to the skill folder. |
 | `src/tools/arg-aliases.ts`| 139   | `file_path`→`path`, `cmd`→`command`, stringy booleans → real booleans.  |
+
+### Skills (modular expertise)
+
+| File                        | Lines | Responsibility                                                     |
+| --------------------------- | ----- | ------------------------------------------------------------------ |
+| `src/skills/types.ts`       | 39    | `Skill` / `SkillMeta` / `SkillLoadResult` shapes.                   |
+| `src/skills/frontmatter.ts` | 109   | Hand-rolled YAML-subset parser (scalars, inline arrays, block lists). No `yaml` dependency. |
+| `src/skills/loader.ts`      | 179   | Discovers `SKILL.md` across bundled → user → project dirs, de-duplicates identical paths, derives name/description when frontmatter is missing, lists bundled resources. |
+| `src/skills/router.ts`      | 140   | Deterministic trigger scoring. Multi-word triggers outweigh single words; explicit cues ("use the X skill") are decisive; a bare skill name never hijacks a sentence. |
+| `src/skills/library.ts`     | 133   | Owns discovered skills + progressive disclosure: compact index for the prompt, capped on-demand bodies, loaded-set so nothing is paid for twice. |
+| `skills/*/SKILL.md`         | 806   | The 10 built-in skills: `code`, `design`, `debug`, `refactor`, `test`, `review`, `security`, `docs`, `git`, `explain`. |
 
 ### Safety & UI
 
@@ -118,11 +130,12 @@ dependencies** (dev-only: `typescript`, `tsx`, `vitest`, `@types/node`).
 | `src/util/diff.ts`         | 89    | LCS line diff with context collapsing.                               |
 | `src/util/session.ts`      | 29    | Per-session state: approvals, counters, plan, token totals.          |
 
-### Tests (83, no model required)
+### Tests (152, no model required)
 
 | File                        | Tests | Covers                                                              |
 | --------------------------- | ----- | ------------------------------------------------------------------- |
 | `tests/loop.test.ts`        | 11    | End-to-end agent runs: happy path, prose-JSON recovery, arg aliases, error feedback, loop breaker, readonly denial, catastrophic command block, real bash execution, step limit, plan injection. |
+| `tests/skills.test.ts`      | 69    | Frontmatter parsing, discovery + override precedence, index compactness, body capping, the 23-case routing table, `use_skill` (load, no-double-pay, resource jail), auto-injection, `/clear` forgetting. |
 | `tests/tools.test.ts`       | 26    | Every tool: read/write/edit/list/search/todo, including fuzzy indentation, ambiguity, deletion, globbing, workspace escape. |
 | `tests/agent-core.test.ts`  | 15    | Compaction, token estimation, diff, arg normalisation, system prompt content. |
 | `tests/safety.test.ts`      | 12    | Path jail and all permission modes including the hard-deny list.    |
@@ -156,6 +169,18 @@ One function to audit, one function to test, no way to forget it in a new tool.
 **Hard-deny applies even in `auto` mode.** `--yolo` should mean "do not bother me about normal
 commands", not "let the model format my disk". `rm -rf /`, `sudo`, `mkfs`, fork bombs, `curl | sh`
 and force-push are refused unconditionally.
+
+**Skills use progressive disclosure because the context window is the budget.** Ten skill bodies
+total ~10,000 tokens; a 7B model has 8,192. So the system prompt carries only names and one-line
+purposes (~450 tokens), bodies load on demand and only once per conversation, and deep detail sits in
+`references/*.md` fetched only if needed. Three levels, and the model never pays for expertise it is
+not using.
+
+**Skill routing is deterministic, not model-driven.** Asking a 7B model to pick one of ten skills
+costs a full round-trip (5-30s locally) and it often picks badly. A keyword score decides the clear
+cases in microseconds and injects the skill *before the first model call*; genuinely ambiguous
+requests fall through and the model chooses with `use_skill`. The routing table is a test
+(`tests/skills.test.ts`), so editing a trigger list cannot silently break routing.
 
 **Small-model robustness is a first-class layer, not an afterthought.** `repair.ts`,
 `arg-aliases.ts`, the fuzzy matcher in `edit-file.ts` and `stream-filter.ts` exist purely because

@@ -10,6 +10,7 @@ import { AgentRuntime } from './agent/runtime.js';
 import { MockProvider, demoScript, sloppyScript } from './llm/mock.js';
 import { OllamaProvider, pingOllama } from './llm/ollama.js';
 import { UI } from './ui/ui.js';
+import { SkillLibrary } from './skills/library.js';
 import { c } from './util/ansi.js';
 import { runDoctor } from './doctor.js';
 
@@ -108,6 +109,33 @@ async function main(argv: string[]): Promise<number> {
       return 0;
     }
 
+    case 'skills': {
+      const lib = await SkillLibrary.create(cfg.workspace, {
+        enabled: true,
+        extraDirs: cfg.skillsDirs,
+        maxBodyChars: cfg.skillsMaxBodyChars,
+      });
+      ui.line(c.bold(`Skills available (${lib.count}):`));
+      ui.line('');
+      ui.line(lib.renderTable());
+      ui.line('');
+      ui.dim('  * = already loaded in this session');
+      ui.dim(`  auto-route: ${cfg.skillsAutoRoute ? 'on' : 'off'} · body cap: ${cfg.skillsMaxBodyChars} chars`);
+      ui.line('');
+      ui.line(c.bold('Searched, in override order:'));
+      for (const d of lib.searchedFrom) {
+        ui.line(c.dim(`  ${d}`));
+      }
+      if (lib.problems.length > 0) {
+        ui.line('');
+        ui.line(c.bold('Notes:'));
+        for (const p of lib.problems) ui.line(c.dim(`  ${p}`));
+      }
+      ui.line('');
+      ui.dim('Add your own: create <project>/.agent/skills/<name>/SKILL.md — see skills/code/SKILL.md for the format.');
+      return 0;
+    }
+
     case 'demo':
     case 'run': {
       const isDemo = args.command === 'demo';
@@ -151,6 +179,11 @@ async function main(argv: string[]): Promise<number> {
       const onSig = (): void => ac.abort();
       process.on('SIGINT', onSig);
       process.on('SIGTERM', onSig);
+
+      if (args.skill) {
+        if (rt.preloadSkill(args.skill)) ui.success(`skill loaded: ${args.skill}`);
+        else ui.warn(`no skill called "${args.skill}" — try: lca skills`);
+      }
 
       if (isDemo) {
         ui.banner('LCA demo (mock provider — no model needed)', [
@@ -201,6 +234,10 @@ async function main(argv: string[]): Promise<number> {
 
       const rt = await buildRuntime(cfg, ui, args.mockScript);
       ui.nonInteractiveAnswer = 'no';
+      if (args.skill) {
+        if (rt.preloadSkill(args.skill)) ui.success(`skill loaded: ${args.skill}`);
+        else ui.warn(`no skill called "${args.skill}" — try: lca skills`);
+      }
       return startRepl(rt, args.prompt || undefined);
     }
   }

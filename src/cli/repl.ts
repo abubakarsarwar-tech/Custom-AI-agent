@@ -15,6 +15,8 @@ ${c.bold('Commands')}
   /model [tag]           show or switch model (e.g. /model qwen3:8b)
   /models                list models already pulled in Ollama
   /plan                  show the agent's current todo plan
+  /skills                list specialised skills (* = already loaded)
+  /skill <name>          load one skill now (e.g. /skill design)
   /tools                 list the tools the model can call
   /permissions [mode]    show or set mode: ask | auto | readonly
   /ctx                   show the environment block fed to the model
@@ -120,6 +122,7 @@ export async function startRepl(rt: AgentRuntime, initialPrompt?: string): Promi
           session: rt.session,
           ui,
           signal: ac2.signal,
+          skills: rt.skills,
         },
       );
       ui.line(res.content);
@@ -210,6 +213,30 @@ export async function startRepl(rt: AgentRuntime, initialPrompt?: string): Promi
 
       case 'plan': {
         ui.line(rt.session.plan.render());
+        return false;
+      }
+
+      case 'skills': {
+        ui.line(c.bold(`Skills (${rt.skills.count}) — * = loaded in this session:`));
+        ui.line(rt.skills.renderTable());
+        ui.dim(`  auto-route ${rt.config.skillsAutoRoute ? 'on' : 'off'} · load one with /skill <name> · add your own in .agent/skills/`);
+        return false;
+      }
+
+      case 'skill': {
+        if (!arg) {
+          ui.error('usage: /skill <name>   (see /skills for the list)');
+          return false;
+        }
+        if (!rt.skills.get(arg)) {
+          ui.error(`no skill called "${arg}". Available: ${rt.skills.all().map((x) => x.name).join(', ')}`);
+          return false;
+        }
+        if (rt.skills.isLoaded(arg)) {
+          ui.info(`"${arg}" is already loaded in this conversation`);
+          return false;
+        }
+        ui.info(rt.preloadSkill(arg) ? `skill loaded: ${arg}` : `could not load ${arg}`);
         return false;
       }
 

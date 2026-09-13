@@ -141,7 +141,7 @@ npm install
 
 npm run doctor    # 1. health check: Node, RAM, Ollama, model, tool support
 npm run demo      # 2. full agent run with NO model (scripted mock provider)
-npm test          # 3. 83 tests, also no model needed
+npm test          # 3. 152 tests, also no model needed
 npm run dev       # 4. the real thing
 ```
 
@@ -216,6 +216,7 @@ export interface Tool {
 | `write_file`  | med  | create or fully rewrite a file                            |
 | `bash`        | high | run any command, with timeout and output caps             |
 | `todo_write`  | low  | the agent's own task list                                 |
+| `use_skill`   | low  | load a specialist skill's instructions on demand (see Layer 6) |
 
 Two rules I followed, and you should too:
 
@@ -271,6 +272,49 @@ Run the agent on a real repo in `ask` mode until you trust it. `--readonly` is g
 - **`tokens.ts`** — `chars / 3.5`. No tokenizer dependency. Over-estimating is the right bias: we
   compact slightly early instead of overflowing.
 - **`plan.ts`** — the todo list, re-injected every few steps so the model does not drift.
+
+### Layer 6 — Skills (`src/skills/`)
+
+Modular expertise. A skill is a folder with a `SKILL.md`: YAML frontmatter (`name`, `description`,
+`triggers`) plus markdown instructions. Ten ship built in — `code`, `design`, `debug`, `refactor`,
+`test`, `review`, `security`, `docs`, `git`, `explain`.
+
+**Why this exists at all: your context window.** A small local model has ~8k tokens. The ten skill
+bodies total ~10,000 tokens — they do not fit, and even if they did there would be nothing left for
+your code. So:
+
+| What                              | Cost            | When                        |
+| --------------------------------- | --------------- | --------------------------- |
+| Skill *index* (name + one line)   | ~450 tokens     | always, in the system prompt |
+| Skill *body* (full instructions)  | 600–1,400 tokens | only when that skill is used |
+| Skill *resource* (`references/x.md`) | on demand    | only if the body points at it |
+
+Three levels of progressive disclosure. That is the whole trick, and it is why a laptop agent can
+carry ten specialisms instead of none.
+
+**Routing** (`src/skills/router.ts`) is deterministic, not model-driven. Each skill declares
+`triggers`; the router scores the user's message against them. A multi-word trigger ("test suite")
+outweighs a single word ("test"), because a phrase cannot be an incidental mention.
+
+- Clear winner → LCA loads the skill itself and injects it *before the model's first turn*. This
+  saves a whole round-trip, which on a laptop is 5–30 seconds.
+- Ambiguous → LCA does nothing and the model calls `use_skill` when it decides.
+- Off-topic → nothing loads, nothing is wasted.
+
+Tuning this taught me three things worth copying:
+
+1. **Do not match bare skill names.** Skill names are common English words. "the test keeps crashing"
+   is a debugging request; matching `test` there hijacks it. An explicit cue is required: "use the
+   design skill", "load security".
+2. **Do not let trigger vocabularies overlap.** `test` originally claimed the bare words "test" and
+   "tests", which appear in most debugging sentences. Each skill now owns a distinct vocabulary.
+3. **One generic word must not be enough to auto-load.** The threshold is set so a single
+   one-word trigger needs corroboration; "is this diff safe to merge?" correctly falls through to the
+   model instead of guessing between `review` and `git`.
+
+Measured on 23 realistic requests: 22 route correctly, and the 23rd is genuinely ambiguous and
+deliberately deferred to the model. `tests/skills.test.ts` contains that table, so a change to a
+trigger list that breaks routing fails the build.
 
 ---
 
@@ -491,6 +535,42 @@ For big repos, `search` stops being enough. Pull `nomic-embed-text` (~270 MB), e
 a local store (sqlite-vec or LanceDB), and add a `semantic_search` tool. Ollama exposes
 `/api/embeddings`.
 
+### Write your own skill
+
+Drop a folder anywhere on the search path — bundled `skills/` → `~/.config/local-code-agent/skills/`
+→ `<project>/.agent/skills/` → `<project>/skills/`. Later wins, so a project can override a built-in
+skill just by shipping its own version of it.
+
+```markdown
+---
+name: deploy
+description: Ship this app — build, push the image, run migrations, verify. Use for any release request.
+triggers: [deploy, release, ship it, rollout, production, staging, docker push, run migrations]
+---
+
+# Deploy skill
+
+1. Run `pnpm build` and confirm it is clean before anything else.
+2. ...
+```
+
+Rules that make a skill actually work:
+
+- **`description` is what the model sees in the index.** Write *when to use it*, not what it is.
+  "Diagnose and fix a bug, crash, or test failure. Use when something is broken and the cause is
+  unknown" routes far better than "Debugging help".
+- **`triggers` decide auto-routing.** Prefer specific multi-word phrases over single common words.
+  A trigger wrapped in `/…/i` is treated as a regex.
+- **Keep the body under ~1,200 tokens.** It is capped at 12,000 chars; past that it is truncated.
+  If you need more, split it into `references/*.md` and let the model pull one with
+  `use_skill(name, resource="references/x.md")`.
+- **Write instructions, not background.** Checklists, commands to run, what to verify, how to report.
+  A skill is a procedure the model follows, not an essay it reads.
+- **Check for overlap.** If two skills claim the same vocabulary, routing degrades for both. Run
+  `lca skills` and read the descriptions side by side.
+
+Verify with `lca skills` (shows token cost, source, and override notes) and `/skills` in the REPL.
+
 ### Add MCP support
 
 The [Model Context Protocol](https://modelcontextprotocol.io) is the standard for pluggable tools.
@@ -505,15 +585,16 @@ What this repo has today, and what to build next:
 **Done**
 
 - [x] Streaming agent loop with tool calling
-- [x] 7 tools: read, write, edit, list, search, bash, plan
+- [x] 8 tools: read, write, edit, list, search, bash, plan, use_skill
 - [x] Permission modes + hard-deny list + workspace jail
 - [x] Context compaction with a factual action log
 - [x] Tool-call repair, argument aliases, fuzzy edits (small-model robustness)
 - [x] Loop breakers and step limits
 - [x] `@file` mentions, `!shell` passthrough, slash commands
 - [x] `AGENTS.md` project rules
+- [x] Skills system: 10 built-in specialisms, progressive disclosure, deterministic auto-routing
 - [x] `doctor` with hardware-aware model recommendations
-- [x] Mock provider + 83 tests that need no model
+- [x] Mock provider + 152 tests that need no model
 
 **Next, in the order I would build them**
 
@@ -547,6 +628,9 @@ What this repo has today, and what to build next:
 | Answers cut off mid-sentence                | Output token cap or context exhaustion. Raise `num_ctx`; check `/stats`.      |
 | Garbled output on Windows                   | Run inside Windows Terminal, not the legacy console.                          |
 | Nothing happens, no error                   | Run with `-v` to see the tool trace and raw errors.                           |
+| Wrong skill gets loaded                     | Check the trigger lists: `lca skills`. Disable routing with `--no-auto-skill` and pick with `/skill <name>`. |
+| A skill you added is not showing up         | It needs `<dir>/<name>/SKILL.md` with a non-empty body. `lca skills` lists what was skipped and why. |
+| Skills eat too much context                 | Lower `LCA_SKILLS_MAX_BODY` (default 12000 chars) or trim the skill body.      |
 
 Debug tools:
 

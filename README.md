@@ -110,6 +110,80 @@ Every file tool is jailed to the workspace: `../` escapes and absolute paths out
 
 ---
 
+## Skills
+
+The agent has **modular expertise**. Each skill is a folder with a `SKILL.md` describing how to do
+one kind of job well. When you ask for something, the relevant skill is loaded and its instructions
+go into the model's context.
+
+10 skills ship built in:
+
+| Skill      | Loaded when you ask about…                                       |
+| ---------- | ---------------------------------------------------------------- |
+| `code`     | implementing a feature, writing a module, making something work   |
+| `design`   | UI/UX, layout, colour, typography, spacing, responsive, a11y      |
+| `debug`    | a bug, crash, failing test, or anything that is broken            |
+| `refactor` | restructuring code without changing behaviour                     |
+| `test`     | writing or fixing tests, coverage                                 |
+| `review`   | reviewing a diff or PR, finding problems                          |
+| `security` | injection, auth, secrets, hardening, audits                       |
+| `docs`     | README, docstrings, guides, changelogs                            |
+| `git`      | commits, branches, rebases, conflicts, history                    |
+| `explain`  | "what does this do", "how does X work"                            |
+
+```bash
+lca skills              # list them, with token cost and where each came from
+lca --skill design      # force one before starting
+```
+
+In the REPL: `/skills` to list, `/skill design` to load one now.
+
+**How it stays cheap.** Only the *name and one-line purpose* of each skill go into the system
+prompt — about **450 tokens for all ten**. The full instructions (~600–1,400 tokens each) are loaded
+only when that skill is actually used, and never twice in one conversation. Inlining all ten bodies
+would cost ~10,000 tokens, which is more than an entire 8k context window.
+
+**Routing.** A request is matched against each skill's `triggers` by a deterministic keyword score.
+When one skill wins clearly, LCA loads it *itself* — no wasted round-trip asking a 7B model to
+choose. When it is ambiguous, LCA stays out of the way and the model calls `use_skill` on its own.
+Turn it off with `--no-auto-skill`, or disable skills entirely with `--no-skills`.
+
+### Write your own
+
+```
+.agent/skills/deploy/SKILL.md
+```
+
+```markdown
+---
+name: deploy
+description: Ship this app — build, push the image, run migrations, verify. Use for any release or deploy request.
+triggers: [deploy, release, ship it, rollout, production, staging, kubernetes, docker push, migrate]
+---
+
+# Deploy skill
+
+1. Run `pnpm build` and confirm it is clean.
+2. ...
+```
+
+Search order, later wins: bundled `skills/` → `~/.config/local-code-agent/skills/` →
+`<project>/.agent/skills/` → `<project>/skills/`. So a project can override any built-in skill just
+by shipping its own.
+
+You can also bundle reference files next to `SKILL.md` and have the model read one on demand:
+
+```
+.agent/skills/deploy/
+  SKILL.md
+  references/runbook.md      <- use_skill(name="deploy", resource="references/runbook.md")
+```
+
+That is a second level of progressive disclosure: the skill body stays short, and deep detail is
+fetched only if it is actually needed.
+
+---
+
 ## Project rules
 
 Drop an `AGENTS.md` in your repo root and it is injected into the system prompt — same trick as
@@ -129,7 +203,7 @@ Drop an `AGENTS.md` in your repo root and it is injected into the system prompt 
 ```bash
 npm run dev          # run from source with tsx
 npm run typecheck    # strict TS, no emit
-npm test             # 83 tests, no model required
+npm test             # 152 tests, no model required
 npm run build        # compile to dist/
 npm link             # install the `lca` command globally
 ```

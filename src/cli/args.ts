@@ -1,7 +1,7 @@
 import type { AgentConfig, PermissionMode, ProviderName } from '../config.js';
 
 export interface ParsedArgs {
-  command: 'repl' | 'run' | 'doctor' | 'models' | 'help' | 'demo';
+  command: 'repl' | 'run' | 'doctor' | 'models' | 'skills' | 'help' | 'demo';
   prompt: string;
   overrides: Partial<AgentConfig>;
   quiet: boolean;
@@ -9,6 +9,8 @@ export interface ParsedArgs {
   interactive: boolean;
   help: boolean;
   mockScript?: 'demo' | 'sloppy';
+  /** Force one skill into context before the first turn. */
+  skill?: string;
 }
 
 const HELP = `
@@ -19,6 +21,7 @@ USAGE
   lca run "fix the failing test"   one-shot task, then exit
   lca doctor                   check Ollama, RAM and recommend a model
   lca models                   list models already pulled locally
+  lca skills                   list the skills the agent can load
   lca demo                     run a scripted end-to-end demo with NO model
 
 FLAGS
@@ -32,6 +35,9 @@ FLAGS
       --yolo               permission mode "auto": never ask, just do it
       --readonly           permission mode "readonly": no writes, no shell
       --ask                permission mode "ask" (default)
+      --skill <name>       load one skill before starting (e.g. --skill design)
+      --no-skills          disable the skills system entirely
+      --no-auto-skill      keep skills but never auto-load one (model chooses)
   -q, --quiet              print only the final answer (for pipes)
   -v, --verbose            show tool output and diffs
   -h, --help               this text
@@ -39,9 +45,10 @@ FLAGS
 ENVIRONMENT (same knobs, useful in .env or your shell profile)
   LCA_MODEL LCA_OLLAMA_URL LCA_NUM_CTX LCA_TEMPERATURE LCA_MAX_STEPS
   LCA_PERMISSION_MODE LCA_PROVIDER LCA_WORKSPACE LCA_BASH_TIMEOUT_MS
+  LCA_SKILLS LCA_SKILLS_AUTO LCA_SKILLS_DIRS LCA_SKILLS_MAX_BODY
 
 IN THE REPL
-  /help /model <tag> /models /plan /tools /permissions <mode> /stats
+  /help /model <tag> /models /plan /tools /skills /skill <name> /permissions <mode> /stats
   /compact /clear /undo-last /exit
   @path/to/file   attach a file to your message
   !git status     run a shell command without the model
@@ -75,6 +82,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
       case 'run':
       case 'doctor':
       case 'models':
+      case 'skills':
       case 'demo':
       case 'help':
         if (positional.length === 0 && out.command === 'repl') out.command = a as ParsedArgs['command'];
@@ -129,6 +137,15 @@ export function parseArgs(argv: string[]): ParsedArgs {
         break;
       case '--sloppy':
         out.mockScript = 'sloppy';
+        break;
+      case '--skill':
+        out.skill = next();
+        break;
+      case '--no-skills':
+        out.overrides.skillsEnabled = false;
+        break;
+      case '--no-auto-skill':
+        out.overrides.skillsAutoRoute = false;
         break;
       case '-h':
       case '--help':

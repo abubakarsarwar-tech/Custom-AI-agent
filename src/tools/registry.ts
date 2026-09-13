@@ -25,6 +25,11 @@ export class ToolRegistry {
     for (const tool of tools) this.byName.set(tool.name, tool);
   }
 
+  /** Add a tool after construction (used for the optional use_skill tool). */
+  register(tool: Tool): void {
+    this.byName.set(tool.name, tool);
+  }
+
   get names(): string[] {
     return [...this.byName.keys()];
   }

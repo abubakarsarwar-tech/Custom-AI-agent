@@ -35,6 +35,14 @@ export interface AgentConfig {
   autoApprove: string[];
   /** Contents of AGENTS.md / custom rules injected into the system prompt. */
   customInstructions: string;
+  /** Modular expertise (design/code/debug...). Only names+descriptions enter the prompt. */
+  skillsEnabled: boolean;
+  /** Auto-load the best-matching skill instead of spending a round-trip asking the model. */
+  skillsAutoRoute: boolean;
+  /** Extra folders to search for SKILL.md files. */
+  skillsDirs: string[];
+  /** Cap on how much of one skill body may enter the context. */
+  skillsMaxBodyChars: number;
   /** Where conversation history + logs are persisted. */
   stateDir: string;
 }
@@ -55,6 +63,10 @@ export const DEFAULT_CONFIG: AgentConfig = {
   autoApprove: [],
   customInstructions: '',
   stateDir: '.agent',
+  skillsEnabled: true,
+  skillsAutoRoute: true,
+  skillsDirs: [],
+  skillsMaxBodyChars: 12000,
 };
 
 const ENV_MAP: Record<string, keyof AgentConfig> = {
@@ -68,6 +80,10 @@ const ENV_MAP: Record<string, keyof AgentConfig> = {
   LCA_PERMISSION_MODE: 'permissionMode',
   LCA_WORKSPACE: 'workspace',
   LCA_BASH_TIMEOUT_MS: 'bashTimeoutMs',
+  LCA_SKILLS: 'skillsEnabled',
+  LCA_SKILLS_AUTO: 'skillsAutoRoute',
+  LCA_SKILLS_DIRS: 'skillsDirs',
+  LCA_SKILLS_MAX_BODY: 'skillsMaxBodyChars',
 };
 
 const NUMERIC: Array<keyof AgentConfig> = [
@@ -77,14 +93,19 @@ const NUMERIC: Array<keyof AgentConfig> = [
   'maxFileBytes',
   'maxOutputChars',
   'bashTimeoutMs',
+  'skillsMaxBodyChars',
 ];
+
+const ARRAYS: Array<keyof AgentConfig> = ['autoApprove', 'skillsDirs'];
+const BOOLEANS: Array<keyof AgentConfig> = ['skillsEnabled', 'skillsAutoRoute'];
 
 function coerce(key: keyof AgentConfig, raw: string): unknown {
   if (NUMERIC.includes(key)) {
     const n = Number(raw);
     return Number.isFinite(n) ? n : raw;
   }
-  if (key === 'autoApprove') return raw.split(',').map((s) => s.trim()).filter(Boolean);
+  if (ARRAYS.includes(key)) return raw.split(',').map((s) => s.trim()).filter(Boolean);
+  if (BOOLEANS.includes(key)) return !['0', 'false', 'no', 'off', ''].includes(raw.trim().toLowerCase());
   return raw;
 }
 

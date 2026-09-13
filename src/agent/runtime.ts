@@ -3,6 +3,9 @@ import { OllamaProvider } from '../llm/ollama.js';
 import type { LLMProvider, Message } from '../llm/types.js';
 import { PermissionGate } from '../safety/permissions.js';
 import { ToolRegistry } from '../tools/registry.js';
+import { useSkillTool } from '../tools/use-skill.js';
+import { ALL_TOOLS } from '../tools/registry.js';
+import { SkillLibrary } from '../skills/library.js';
 import type { UI } from '../ui/ui.js';
 import { newSession, type SessionState } from '../util/session.js';
 import { compactHistory } from './compact.js';
@@ -35,6 +38,8 @@ export class AgentRuntime {
   config: AgentConfig;
   provider: LLMProvider;
   readonly registry: ToolRegistry;
+  /** Always present; `enabled=false` when skills are switched off. */
+  skills: SkillLibrary;
   readonly permissions: PermissionGate;
   readonly session: SessionState;
   messages: Message[] = [];
@@ -42,18 +47,31 @@ export class AgentRuntime {
   repoContext = '';
   private readonly factory: ProviderFactory;
 
-  private constructor(opts: RuntimeOptions) {
+  private constructor(opts: RuntimeOptions, skills: SkillLibrary) {
     this.ui = opts.ui;
     this.config = opts.config;
     this.factory = opts.factory ?? defaultProviderFactory;
     this.provider = opts.provider ?? this.factory(opts.config);
-    this.registry = opts.registry ?? new ToolRegistry();
+    this.skills = skills;
+    this.registry = opts.registry ?? new ToolRegistry(ALL_TOOLS);
+    // use_skill exists only when there are skills to use — that keeps its schema
+    // out of the prompt (~90 tokens) when the system is switched off. Enforced
+    // here rather than at construction so a caller-supplied registry cannot
+    // silently lose skill support.
+    if (skills.enabled && skills.count > 0 && !this.registry.has(useSkillTool.name)) {
+      this.registry.register(useSkillTool);
+    }
     this.session = newSession(opts.config);
     this.permissions = new PermissionGate(opts.config.permissionMode, this.session, opts.ui);
   }
 
   static async create(opts: RuntimeOptions): Promise<AgentRuntime> {
-    const rt = new AgentRuntime(opts);
+    const skills = await SkillLibrary.create(opts.config.workspace, {
+      enabled: opts.config.skillsEnabled,
+      extraDirs: opts.config.skillsDirs,
+      maxBodyChars: opts.config.skillsMaxBodyChars,
+    });
+    const rt = new AgentRuntime(opts, skills);
     await rt.refreshContext();
     return rt;
   }
@@ -68,6 +86,8 @@ export class AgentRuntime {
       customInstructions: this.config.customInstructions,
       toolNames: this.registry.names,
       permissionMode: this.config.permissionMode,
+      skillsIndex: this.skills.enabled ? this.skills.renderIndex() : '',
+      skillsAutoRoute: this.config.skillsAutoRoute,
     });
     const head: Message = { role: 'system', content: this.systemPrompt };
     this.messages = [head, ...this.messages.filter((m) => m.role !== 'system')];
@@ -90,13 +110,16 @@ export class AgentRuntime {
     this.messages = [{ role: 'system', content: this.systemPrompt }];
     this.session.plan.clear();
     this.session.stepsUsed = 0;
+    // History is gone, so any skill body in it is gone too.
+    this.skills.forgetAll();
   }
 
   /** Drop the last user turn and everything after it (undo a bad request). */
   undoLast(): boolean {
     for (let i = this.messages.length - 1; i >= 0; i -= 1) {
       const m = this.messages[i];
-      if (m && m.role === 'user' && !m.content.startsWith('[agent')) {
+      // Skip harness-injected notes: plan reminders, compaction logs, skill loads.
+      if (m && m.role === 'user' && !m.content.startsWith('[')) {
         this.messages = this.messages.slice(0, i);
         return true;
       }
@@ -125,15 +148,70 @@ export class AgentRuntime {
       `context ~${formatTokens(this.tokenEstimate())}/${this.config.numCtx} tok`,
       `messages ${this.messages.length}`,
       `steps ${this.session.stepsUsed}`,
+      this.skills.loadedNames().length > 0 ? `skills ${this.skills.loadedNames().join('+')}` : '',
       `in ${formatTokens(t.promptTokens)} / out ${formatTokens(t.completionTokens)} tok`,
       `llm ${(t.llmMs / 1000).toFixed(1)}s · tools ${(t.toolMs / 1000).toFixed(1)}s`,
-    ].join(' · ');
+    ]
+      .filter(Boolean)
+      .join(' · ');
+  }
+
+  /**
+   * Deterministic skill routing.
+   *
+   * Asking a 7B model "which of these ten skills applies?" costs a full
+   * round-trip (5-30s on a laptop) and it often answers badly. When the
+   * keyword score is confident we load the skill OURSELVES and inject it, so
+   * the model's very first turn already has the right expertise. Ambiguous
+   * requests are left alone and the model can still call use_skill itself.
+   */
+  autoLoadSkill(userText: string): { note: string; skill: string } | null {
+    if (!this.config.skillsAutoRoute || !this.skills.enabled) return null;
+    const decision = this.skills.autoRoute(userText);
+    const top = decision.scored[0];
+    if (!decision.pick || !top) return null;
+    if (this.skills.isLoaded(decision.pick.name)) return null;
+
+    const note = this.buildSkillNote(decision.pick.name, top.matched);
+    return note ? { note, skill: decision.pick.name } : null;
+  }
+
+  /** Load a skill body into the conversation and label where it came from. */
+  private buildSkillNote(name: string, matched: string[], forced = false): string | null {
+    if (this.skills.isLoaded(name)) return null;
+    const loaded = this.skills.load(name);
+    if (!loaded) return null;
+    const tag = forced ? 'skill loaded' : 'skill auto-loaded';
+    const why = !forced && matched.length > 0 ? ` — matched ${matched.slice(0, 3).join(', ')}` : '';
+    return (
+      `[${tag}: ${name}${why}]\n` +
+      'Follow these instructions while handling the request below. ' +
+      'If they turn out not to apply, ignore them and say so in one line.\n\n' +
+      loaded.text
+    );
+  }
+
+  /** Force a skill into context (--skill flag, or /skill in the REPL). */
+  preloadSkill(name: string): boolean {
+    if (!this.skills.enabled || !this.skills.get(name)) return false;
+    if (this.skills.isLoaded(name)) return true;
+    const note = this.buildSkillNote(name, [], true);
+    if (!note) return false;
+    this.messages.push({ role: 'user', content: note });
+    return true;
   }
 
   send(text: string, signal: AbortSignal): Promise<TurnResult> {
     if (this.messages.length === 0 || this.messages[0]?.role !== 'system') {
       this.messages.unshift({ role: 'system', content: this.systemPrompt });
     }
+
+    const auto = this.autoLoadSkill(text);
+    if (auto) {
+      this.messages.push({ role: 'user', content: auto.note });
+      this.ui.note(`skill auto-loaded: ${auto.skill}`);
+    }
+
     return runTurn(this.messages, text, {
       provider: this.provider,
       registry: this.registry,
@@ -142,6 +220,7 @@ export class AgentRuntime {
       config: this.config,
       session: this.session,
       systemPrompt: this.systemPrompt,
+      skills: this.skills,
     }, signal);
   }
 }
