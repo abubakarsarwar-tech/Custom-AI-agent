@@ -1,0 +1,34 @@
+{
+  "name": "local-code-agent",
+  "version": "0.1.0",
+  "description": "A 100% local coding agent (like Claude Code) that runs entirely on your laptop via Ollama. Zero cloud calls.",
+  "type": "module",
+  "license": "MIT",
+  "engines": {
+    "node": ">=18.17"
+  },
+  "bin": {
+    "lca": "./dist/index.js"
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "dev": "tsx src/index.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "doctor": "tsx src/index.ts doctor",
+    "demo": "tsx src/index.ts demo -v",
+    "demo:sloppy": "tsx src/index.ts demo --sloppy -v"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}

@@ -1,0 +1,159 @@
+import { execFile } from 'node:child_process';
+import { existsSync, readFileSync } from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
+import { isIgnoredName } from '../safety/paths.js';
+
+function run(cmd: string, args: string[], cwd: string): Promise<string> {
+  return new Promise((resolve) => {
+    execFile(cmd, args, { cwd, timeout: 5000, maxBuffer: 1024 * 256 }, (err, stdout) => {
+      resolve(err ? '' : stdout.trim());
+    });
+  });
+}
+
+const STACK_MARKERS: Array<[string, string]> = [
+  ['package.json', 'Node.js / TypeScript or JavaScript'],
+  ['tsconfig.json', 'TypeScript'],
+  ['pyproject.toml', 'Python (pyproject)'],
+  ['requirements.txt', 'Python (requirements.txt)'],
+  ['go.mod', 'Go'],
+  ['Cargo.toml', 'Rust'],
+  ['pom.xml', 'Java (Maven)'],
+  ['build.gradle', 'Java/Kotlin (Gradle)'],
+  ['composer.json', 'PHP (Composer)'],
+  ['Gemfile', 'Ruby'],
+  ['CMakeLists.txt', 'C/C++ (CMake)'],
+];
+
+function readScripts(pkgPath: string): string[] {
+  try {
+    const pkg = JSON.parse(readFileSync(pkgPath, 'utf8')) as {
+      scripts?: Record<string, string>;
+    };
+    return Object.entries(pkg.scripts ?? {})
+      .slice(0, 14)
+      .map(([k, v]) => `${k}: ${v}`);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Everything the model needs to orient itself, gathered ONCE per session.
+ * This is the cheapest way to make a small local model behave like it
+ * understands your repo: hand it the map up front instead of making it
+ * burn five tool calls discovering it.
+ */
+export async function buildRepoContext(workspace: string): Promise<{
+  text: string;
+  isGit: boolean;
+  gitBranch: string;
+}> {
+  const lines: string[] = [];
+
+  lines.push(`Workspace: ${workspace}`);
+  lines.push(`OS: ${os.type()} ${os.release()} (${os.platform()}/${os.arch()})`);
+  lines.push(`Shell: ${process.env.SHELL ?? (os.platform() === 'win32' ? 'cmd.exe' : 'sh')}`);
+  lines.push(`Date: ${new Date().toISOString().slice(0, 10)}`);
+  lines.push(`User: ${os.userInfo().username}`);
+
+  // git state
+  const isGit = existsSync(path.join(workspace, '.git'));
+  let gitBranch = '';
+  if (isGit) {
+    gitBranch = await run('git', ['rev-parse', '--abbrev-ref', 'HEAD'], workspace);
+    const status = await run('git', ['status', '--porcelain=v1', '-b'], workspace);
+    lines.push(`Git branch: ${gitBranch || '(unknown)'}`);
+    if (status) {
+      const short = status.split('\n').slice(0, 15).join('\n');
+      lines.push(`Git status:\n${short}`);
+    } else {
+      lines.push('Git status: clean');
+    }
+  } else {
+    lines.push('Git: not a git repository');
+  }
+
+  // stack detection
+  const detected = STACK_MARKERS.filter(([file]) => existsSync(path.join(workspace, file)));
+  if (detected.length > 0) {
+    lines.push(`Detected stack: ${detected.map(([, label]) => label).join(', ')}`);
+  }
+
+  // top-level layout
+  try {
+    const entries = (await import('node:fs/promises')).readdir(workspace, { withFileTypes: true });
+    const dirs: string[] = [];
+    const files: string[] = [];
+    for (const e of await entries) {
+      if (isIgnoredName(e.name)) continue;
+      if (e.isDirectory()) dirs.push(`${e.name}/`);
+      else files.push(e.name);
+    }
+    lines.push(`Top level: ${[...dirs.sort(), ...files.sort()].slice(0, 40).join('  ')}`);
+  } catch {
+    /* ignore */
+  }
+
+  // npm scripts are the fastest route to "how do I build/test this thing"
+  const pkgPath = path.join(workspace, 'package.json');
+  if (existsSync(pkgPath)) {
+    const scripts = readScripts(pkgPath);
+    if (scripts.length > 0) lines.push(`package.json scripts:\n  ${scripts.join('\n  ')}`);
+  }
+
+  return { text: lines.join('\n'), isGit, gitBranch };
+}
+
+export function buildSystemPrompt(input: {
+  modelName: string;
+  repoContext: string;
+  customInstructions: string;
+  toolNames: string[];
+  permissionMode: string;
+}): string {
+  return `You are LCA (Local Code Agent), an interactive CLI coding agent built for software engineering.
+You run 100% on the user's own laptop through Ollama — model "${input.modelName}". Nothing is sent to the cloud.
+
+<environment>
+${input.repoContext}
+</environment>
+
+<capabilities>
+You can read, search, create and edit files, and run shell commands inside the workspace via tools.
+Available tools: ${input.toolNames.join(', ')}.
+Permission mode: "${input.permissionMode}" — in "ask" mode the user approves risky actions; a tool may come back with "Not allowed". If that happens, do NOT retry the same call; explain what you need and move on.
+</capabilities>
+
+<operating_rules>
+1. Act, don't narrate. Never describe an edit you could make — make it with a tool call. Never paste a full file into chat when you can write_file it.
+2. Read before you edit. Always read_file (or search) a file before changing it. Editing from memory produces broken patches.
+3. Prefer search over reading. To find where something is used, call search — do not read every file in the tree.
+4. Make it actually work. Write complete, runnable code. No placeholders, no "...", no "rest of code here", no stubbed TODOs unless the user explicitly asked for a skeleton.
+5. Verify your work. After changing code, run the project's typecheck/build/tests with bash when they exist. Read the errors and fix them. Repeat until green.
+6. Small, surgical edits. Use edit_file for targeted changes with 2-4 lines of surrounding context so the match is unique. Use write_file only for new files or genuine full rewrites.
+7. Stay in the workspace. Never reference absolute paths outside it; file tools are jailed and will reject escapes.
+8. Multi-step work needs a plan. If a task takes more than ~3 tool calls, call todo_write first, keep exactly one item in_progress, and update it as you go.
+9. One tool call per turn when the next step depends on the result. Parallel-style batching only when calls are independent.
+10. Stop when you're done. When the task is complete, reply with a short plain-text summary and make NO tool call — that ends the turn.
+11. Never invent results. If a command failed or a file is missing, say so plainly and fix it.
+</operating_rules>
+
+<output_style>
+- Be brief. A few sentences, not an essay. The user is a developer watching a terminal.
+- No preamble ("Sure, I'll..."), no restating the question, no emoji.
+- Use markdown only for short code snippets and file paths in backticks.
+- When you finish, summarise: what changed, which files, how it was verified, and anything left for the user.
+- If you are blocked or need a decision, ask one specific question instead of guessing.
+</output_style>
+
+<local_model_discipline>
+You are a small model with a limited context window, so be economical:
+- Emit tool calls in the exact JSON schema given. Arguments must be valid JSON strings.
+- Do not wrap tool calls in prose or markdown fences — the harness reads them directly.
+- Do not repeat an identical failing call. Change the approach after one failure.
+- When quoting existing code in old_text, copy it verbatim from read_file output and drop the line-number prefix.
+</local_model_discipline>
+${input.customInstructions ? `\n${input.customInstructions}\n` : ''}`;
+}
