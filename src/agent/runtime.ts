@@ -7,6 +7,7 @@ import { useSkillTool } from '../tools/use-skill.js';
 import { ALL_TOOLS } from '../tools/registry.js';
 import { SkillLibrary } from '../skills/library.js';
 import { LessonStore } from '../memory/lessons.js';
+import { CheckpointStore, humanBytes, type Checkpoint, type RestoreResult } from './checkpoint.js';
 import { rememberTool } from '../tools/remember.js';
 import type { UI } from '../ui/ui.js';
 import { newSession, type SessionState } from '../util/session.js';
@@ -44,6 +45,8 @@ export class AgentRuntime {
   skills: SkillLibrary;
   /** Cross-session memory. null when disabled. */
   memory: LessonStore | null;
+  /** Per-turn file snapshots. null when disabled. */
+  checkpoints: CheckpointStore | null;
   readonly permissions: PermissionGate;
   readonly session: SessionState;
   messages: Message[] = [];
@@ -53,13 +56,19 @@ export class AgentRuntime {
   lastInjectedLessons: string[] = [];
   private readonly factory: ProviderFactory;
 
-  private constructor(opts: RuntimeOptions, skills: SkillLibrary, memory: LessonStore | null) {
+  private constructor(
+    opts: RuntimeOptions,
+    skills: SkillLibrary,
+    memory: LessonStore | null,
+    checkpoints: CheckpointStore | null,
+  ) {
     this.ui = opts.ui;
     this.config = opts.config;
     this.factory = opts.factory ?? defaultProviderFactory;
     this.provider = opts.provider ?? this.factory(opts.config);
     this.skills = skills;
     this.memory = memory;
+    this.checkpoints = checkpoints;
     const tools = memory ? [...ALL_TOOLS, rememberTool] : ALL_TOOLS;
     this.registry = opts.registry ?? new ToolRegistry(tools);
     // use_skill exists only when there are skills to use — that keeps its schema
@@ -85,7 +94,10 @@ export class AgentRuntime {
     const memory = opts.config.memoryEnabled
       ? await LessonStore.open(opts.config.stateDir)
       : null;
-    const rt = new AgentRuntime(opts, skills, memory);
+    const checkpoints = opts.config.checkpointsEnabled
+      ? await CheckpointStore.open(opts.config.stateDir, { keep: opts.config.checkpointsKeep })
+      : null;
+    const rt = new AgentRuntime(opts, skills, memory, checkpoints);
     await rt.refreshContext();
     return rt;
   }
@@ -104,6 +116,7 @@ export class AgentRuntime {
       skillsAutoRoute: this.config.skillsAutoRoute,
       memoryEnabled: Boolean(this.memory),
       memoryCount: this.memory?.count ?? 0,
+      checkpointsEnabled: Boolean(this.checkpoints),
     });
     const head: Message = { role: 'system', content: this.systemPrompt };
     this.messages = [head, ...this.messages.filter((m) => m.role !== 'system')];
@@ -219,7 +232,7 @@ export class AgentRuntime {
   }
 
   /** `signal` is optional: a programmatic caller should not need an AbortController. */
-  send(text: string, signal: AbortSignal = new AbortController().signal): Promise<TurnResult> {
+  async send(text: string, signal: AbortSignal = new AbortController().signal): Promise<TurnResult> {
     if (this.messages.length === 0 || this.messages[0]?.role !== 'system') {
       this.messages.unshift({ role: 'system', content: this.systemPrompt });
     }
@@ -243,16 +256,65 @@ export class AgentRuntime {
       }
     }
 
-    return runTurn(this.messages, text, {
-      provider: this.provider,
-      registry: this.registry,
-      permissions: this.permissions,
-      ui: this.ui,
-      config: this.config,
-      session: this.session,
-      systemPrompt: this.systemPrompt,
-      skills: this.skills,
-      memory: this.memory,
-    }, signal);
+    // Snapshot everything this turn is about to change. Opened before the loop
+    // and closed in `finally`, so an interrupted or failed turn is still
+    // reversible — that is exactly when you most want to roll back.
+    this.checkpoints?.begin(text);
+    try {
+      return await runTurn(
+        this.messages,
+        text,
+        {
+          provider: this.provider,
+          registry: this.registry,
+          permissions: this.permissions,
+          ui: this.ui,
+          config: this.config,
+          session: this.session,
+          systemPrompt: this.systemPrompt,
+          skills: this.skills,
+          memory: this.memory,
+          checkpoint: this.checkpoints,
+        },
+        signal,
+      );
+    } finally {
+      const saved = await this.checkpoints?.finish();
+      if (saved) {
+        const nouns = saved.files.length === 1 ? 'file' : 'files';
+        this.ui.note(`checkpoint ${saved.id}: ${saved.files.length} ${nouns} can be rolled back`);
+        this.ui.emitCheckpoint(saved);
+      }
+    }
+  }
+
+  /* ---------------- checkpoints ---------------- */
+
+  /** Newest first. */
+  checkpointList(): Checkpoint[] {
+    return this.checkpoints?.list() ?? [];
+  }
+
+  /**
+   * Roll the workspace back to how it looked before that turn. The state being
+   * left is checkpointed too, so a restore can itself be undone.
+   */
+  async restoreCheckpoint(id: string): Promise<RestoreResult | null> {
+    if (!this.checkpoints) return null;
+    const result = await this.checkpoints.restore(id, this.config.workspace);
+    if (result) {
+      const parts = [
+        result.reverted.length ? `${result.reverted.length} reverted` : '',
+        result.deleted.length ? `${result.deleted.length} deleted` : '',
+      ].filter(Boolean);
+      this.ui.success(`restored ${id}${parts.length ? ` (${parts.join(', ')})` : ''}`);
+    }
+    return result;
+  }
+
+  async checkpointSummary(): Promise<string> {
+    if (!this.checkpoints) return 'checkpoints off';
+    const bytes = await this.checkpoints.sizeBytes();
+    return `${this.checkpoints.count} checkpoint(s), ${humanBytes(bytes)}`;
   }
 }

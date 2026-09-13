@@ -5,6 +5,7 @@ import type { JsonSchema } from '../llm/types.js';
 import type { UI } from '../ui/ui.js';
 import type { SkillLibrary } from '../skills/library.js';
 import type { LessonStore } from '../memory/lessons.js';
+import type { CheckpointStore } from '../agent/checkpoint.js';
 
 export interface ToolResult {
   /** What goes back into the model's context. Keep it tight — tokens are scarce locally. */
@@ -26,6 +27,8 @@ export interface ToolContext {
   skills: SkillLibrary | null;
   /** null when memory is switched off. */
   memory: LessonStore | null;
+  /** null when checkpointing is switched off. Mutating tools capture before writing. */
+  checkpoint: CheckpointStore | null;
 }
 
 export interface Tool {

@@ -7,3 +7,6 @@ coverage/
 .agent/history.jsonl
 .agent/cache/
 tmp/
+
+# machine-local rollback state — never commit this
+.agent/checkpoints/

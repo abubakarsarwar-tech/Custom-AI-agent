@@ -141,6 +141,16 @@ function renderSkillsBlock(input: {
   return lines.join('\n');
 }
 
+/** One line, only when rollback exists — keeps the prompt honest about safety. */
+function renderCheckpointLine(enabled?: boolean): string {
+  if (!enabled) return '';
+  return (
+    'Rollback: every file you change with write_file or edit_file is snapshotted before the change, ' +
+    'so the user can revert the whole turn. Mention that once after a risky change. It is not a reason ' +
+    'to skip asking permission, and it does not cover shell commands.'
+  );
+}
+
 export function buildSystemPrompt(input: {
   modelName: string;
   repoContext: string;
@@ -152,6 +162,7 @@ export function buildSystemPrompt(input: {
   skillsAutoRoute?: boolean;
   memoryEnabled?: boolean;
   memoryCount?: number;
+  checkpointsEnabled?: boolean;
 }): string {
   return `You are LCA (Local Code Agent), an interactive CLI coding agent built for software engineering.
 You run 100% on the user's own laptop through Ollama — model "${input.modelName}". Nothing is sent to the cloud.
@@ -164,6 +175,7 @@ ${input.repoContext}
 You can read, search, create and edit files, and run shell commands inside the workspace via tools.
 Available tools: ${input.toolNames.join(', ')}.
 Permission mode: "${input.permissionMode}" — in "ask" mode the user approves risky actions; a tool may come back with "Not allowed". If that happens, do NOT retry the same call; explain what you need and move on.
+${renderCheckpointLine(input.checkpointsEnabled)}
 </capabilities>
 
 <operating_rules>

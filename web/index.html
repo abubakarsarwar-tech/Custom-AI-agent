@@ -42,6 +42,19 @@
       <p class="empty-note" id="plan-empty">No plan yet. The agent creates one for multi-step tasks.</p>
     </section>
 
+    <section aria-labelledby="h-checkpoints">
+      <h2 class="panel-title" id="h-checkpoints">Checkpoints <span class="count" id="cp-count"></span></h2>
+      <button class="btn cp-rollback" id="cp-restore-last" type="button" disabled>
+        ↩ Roll back the last change
+      </button>
+      <div class="cp-list" id="cp-list"></div>
+      <p class="empty-note" id="cp-empty">
+        No file changes yet. Any turn that edits a file gets a rollback point here.
+      </p>
+      <p class="empty-note">Covers <code>write_file</code> and <code>edit_file</code>. Rolling back is
+        itself reversible.</p>
+    </section>
+
     <section aria-labelledby="h-skills">
       <h2 class="panel-title" id="h-skills">Skills <span class="count" id="skills-count"></span></h2>
       <div class="skill-list" id="skill-list" role="group" aria-label="Load a skill"></div>

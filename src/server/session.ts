@@ -19,6 +19,16 @@ export interface Snapshot {
   plan: Array<{ content: string; status: string }>;
   skills: Array<{ name: string; description: string; loaded: boolean; tokens: number; source: string }>;
   memory: { count: number; lessons: Array<{ id: string; text: string; tags: string[]; score: number; source: string }> };
+  checkpoints: {
+    count: number;
+    items: Array<{
+      id: string;
+      label: string;
+      createdAt: string;
+      restoredAt?: string;
+      files: Array<{ rel: string; existed: boolean }>;
+    }>;
+  };
   history: Array<{ role: string; text: string }>;
   tools: string[];
   ollama: { ok: boolean; error?: string };
@@ -187,6 +197,16 @@ export class WebSession {
         tokens: s.bodyTokens,
         source: s.source,
       })),
+      checkpoints: {
+        count: rt.checkpoints?.count ?? 0,
+        items: rt.checkpointList().map((cp) => ({
+          id: cp.id,
+          label: cp.label,
+          createdAt: cp.createdAt,
+          ...(cp.restoredAt ? { restoredAt: cp.restoredAt } : {}),
+          files: cp.files.map((f) => ({ rel: f.rel, existed: f.existed })),
+        })),
+      },
       memory: {
         count: rt.memory?.count ?? 0,
         lessons: (rt.memory?.all() ?? [])

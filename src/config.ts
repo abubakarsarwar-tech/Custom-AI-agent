@@ -47,6 +47,10 @@ export interface AgentConfig {
   memoryEnabled: boolean;
   /** Max remembered facts injected into a single turn. */
   memoryMaxInject: number;
+  /** Snapshot files before the agent changes them, so a turn can be rolled back. */
+  checkpointsEnabled: boolean;
+  /** How many turn-checkpoints to keep before pruning the oldest. */
+  checkpointsKeep: number;
   /** Where conversation history + logs are persisted. */
   stateDir: string;
   /** `lca serve`: interface to bind. 127.0.0.1 keeps the web UI private to this machine. */
@@ -81,6 +85,8 @@ export const DEFAULT_CONFIG: AgentConfig = {
   skillsMaxBodyChars: 12000,
   memoryEnabled: true,
   memoryMaxInject: 5,
+  checkpointsEnabled: true,
+  checkpointsKeep: 20,
   serveHost: '127.0.0.1',
   servePort: 8787,
   serveToken: '',
@@ -104,6 +110,8 @@ const ENV_MAP: Record<string, keyof AgentConfig> = {
   LCA_SKILLS_MAX_BODY: 'skillsMaxBodyChars',
   LCA_MEMORY: 'memoryEnabled',
   LCA_MEMORY_MAX_INJECT: 'memoryMaxInject',
+  LCA_CHECKPOINTS: 'checkpointsEnabled',
+  LCA_CHECKPOINTS_KEEP: 'checkpointsKeep',
   LCA_WEB_HOST: 'serveHost',
   LCA_WEB_PORT: 'servePort',
   LCA_WEB_TOKEN: 'serveToken',
@@ -119,11 +127,17 @@ const NUMERIC: Array<keyof AgentConfig> = [
   'bashTimeoutMs',
   'skillsMaxBodyChars',
   'memoryMaxInject',
+  'checkpointsKeep',
   'servePort',
 ];
 
 const ARRAYS: Array<keyof AgentConfig> = ['autoApprove', 'skillsDirs'];
-const BOOLEANS: Array<keyof AgentConfig> = ['skillsEnabled', 'skillsAutoRoute', 'memoryEnabled'];
+const BOOLEANS: Array<keyof AgentConfig> = [
+  'skillsEnabled',
+  'skillsAutoRoute',
+  'memoryEnabled',
+  'checkpointsEnabled',
+];
 
 function coerce(key: keyof AgentConfig, raw: string): unknown {
   if (NUMERIC.includes(key)) {
@@ -218,5 +232,6 @@ export function redact(cfg: AgentConfig): Record<string, unknown> {
     serveHost: cfg.serveHost,
     servePort: cfg.servePort,
     serveToken: cfg.serveToken ? 'set' : 'none',
+    checkpoints: cfg.checkpointsEnabled ? `on (keep ${cfg.checkpointsKeep})` : 'off',
   };
 }

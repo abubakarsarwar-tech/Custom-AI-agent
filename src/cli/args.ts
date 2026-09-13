@@ -54,11 +54,13 @@ ENVIRONMENT (same knobs, useful in .env or your shell profile)
   LCA_MODEL LCA_OLLAMA_URL LCA_NUM_CTX LCA_TEMPERATURE LCA_MAX_STEPS
   LCA_PERMISSION_MODE LCA_PROVIDER LCA_WORKSPACE LCA_BASH_TIMEOUT_MS
   LCA_SKILLS LCA_SKILLS_AUTO LCA_SKILLS_DIRS LCA_SKILLS_MAX_BODY
-  LCA_MEMORY LCA_MEMORY_MAX_INJECT LCA_WEB_HOST LCA_WEB_PORT LCA_WEB_TOKEN
+  LCA_MEMORY LCA_MEMORY_MAX_INJECT LCA_CHECKPOINTS LCA_CHECKPOINTS_KEEP
+  LCA_WEB_HOST LCA_WEB_PORT LCA_WEB_TOKEN
 
 IN THE REPL
   /help /model <tag> /models /plan /tools /skills /skill <name> /permissions <mode> /stats
-  /memory /remember <text> /forget <id> /compact /clear /undo-last /exit
+  /checkpoints /restore [id] /memory /remember <text> /forget <id>
+  /compact /clear /undo-last /exit
   @path/to/file   attach a file to your message
   !git status     run a shell command without the model
   Ctrl+C          interrupt the current turn

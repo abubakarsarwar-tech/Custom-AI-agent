@@ -80,6 +80,7 @@ export async function makeContext(
       signal: new AbortController().signal,
       skills: null,
       memory,
+      checkpoint: null,
     },
     cleanup: async () => {},
   };

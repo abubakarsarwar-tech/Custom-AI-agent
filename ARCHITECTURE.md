@@ -64,20 +64,20 @@ Every file, what it does, and why it exists. ~5,300 lines of TypeScript + 10 ski
 | File                    | Lines | Responsibility                                                            |
 | ----------------------- | ----- | ------------------------------------------------------------------------- |
 | `src/index.ts`          | 334   | Shebang entry. Dispatches `repl`/`run`/`demo`/`doctor`/`models`/`skills`/`serve`. Handles EPIPE, SIGINT, pre-flight Ollama check. |
-| `src/cli/args.ts`       | 201   | Hand-rolled flag parser (no `commander` dependency) + help text.           |
-| `src/cli/repl.ts`       | 309   | Interactive REPL: readline, slash commands, `@file` mentions, `!shell`, Ctrl+C abort. |
+| `src/cli/args.ts`       | 203   | Hand-rolled flag parser (no `commander` dependency) + help text.           |
+| `src/cli/repl.ts`       | 420   | Interactive REPL: readline, slash commands (skills, memory, checkpoints), `@file` mentions, `!shell`, Ctrl+C abort. |
 | `src/cli/prompt.ts`     | 40    | The y/n/always approval prompt, shared by REPL and one-shot mode.          |
 | `src/cli/mentions.ts`   | 67    | Expands `@path/to/file` into attached `<file>` blocks.                     |
-| `src/config.ts`         | 222   | Layered config: defaults → `.agent/config.json` → env → CLI. Loads `AGENTS.md`. |
+| `src/config.ts`         | 237   | Layered config: defaults → `.agent/config.json` → env → CLI. Loads `AGENTS.md`. |
 | `src/doctor.ts`         | 210   | Environment health check + RAM-aware model recommendation table.           |
 
 ### Agent core
 
 | File                         | Lines | Responsibility                                                       |
 | ---------------------------- | ----- | -------------------------------------------------------------------- |
-| `src/agent/loop.ts`          | 277   | **The agent loop.** Read this first. Compaction, plan injection, streaming, tool dispatch, loop breakers, step limit. |
-| `src/agent/runtime.ts`       | 258   | Stateful container across turns. `send()`, `setModel()`, `clearHistory()`, `undoLast()`, `compactNow()`, `statsLine()`. Owns the memory store and per-turn lesson recall. |
-| `src/agent/context.ts`       | 211   | Builds the environment block (OS, git, stack, tree, scripts) and the system prompt. |
+| `src/agent/loop.ts`          | 280   | **The agent loop.** Read this first. Compaction, plan injection, streaming, tool dispatch, loop breakers, step limit. |
+| `src/agent/runtime.ts`       | 320   | Stateful container across turns. `send()`, `setModel()`, `clearHistory()`, `undoLast()`, `compactNow()`, `statsLine()`. Owns the memory store, per-turn lesson recall, and the checkpoint lifecycle (`begin` before the loop, `finish` in a `finally`). |
+| `src/agent/context.ts`       | 223   | Builds the environment block (OS, git, stack, tree, scripts) and the system prompt. |
 | `src/agent/compact.ts`       | 125   | Replaces old turns with a deterministic action log when near the context budget. |
 | `src/agent/stream-filter.ts` | 81    | Hides prose-JSON tool calls from the display while streaming.         |
 | `src/agent/plan.ts`          | 50    | `PlanStore` — the agent's todo list, rendered back into context.      |
@@ -99,8 +99,8 @@ Every file, what it does, and why it exists. ~5,300 lines of TypeScript + 10 ski
 | `src/tools/types.ts`      | 84    | `Tool` / `ToolResult` / `ToolContext` interfaces + arg coercion helpers that tolerate sloppy model output. |
 | `src/tools/registry.ts`   | 82    | Name → tool map, schema export, and `invoke()` which converts every throw into an error result. |
 | `src/tools/read-file.ts`  | 85    | `cat -n` output, offset/limit, binary detection, size cap.              |
-| `src/tools/edit-file.ts`  | 236   | Exact → whitespace-tolerant match, ambiguity detection, indent restoration, closest-region hint on failure. |
-| `src/tools/write-file.ts` | 77    | Create/overwrite with `mkdir -p`, diff for the UI.                      |
+| `src/tools/edit-file.ts`  | 239   | Exact → whitespace-tolerant match, ambiguity detection, indent restoration, closest-region hint on failure. Captures a checkpoint only once the edit is known to apply. |
+| `src/tools/write-file.ts` | 81    | Create/overwrite with `mkdir -p`, diff for the UI, checkpoint capture before mutating.                      |
 | `src/tools/list-dir.ts`   | 109   | Tree with sizes, depth cap, skips `node_modules`/`.git`/`dist`.         |
 | `src/tools/search.ts`     | 160   | Regex/literal grep in pure TS with glob filtering and result caps.      |
 | `src/tools/bash.ts`       | 139   | `spawn` with shell, timeout kill, output caps, exit code reporting.     |
@@ -119,6 +119,12 @@ Every file, what it does, and why it exists. ~5,300 lines of TypeScript + 10 ski
 | `src/skills/library.ts`     | 133   | Owns discovered skills + progressive disclosure: compact index for the prompt, capped on-demand bodies, loaded-set so nothing is paid for twice. |
 | `skills/*/SKILL.md`         | 806   | The 10 built-in skills: `code`, `design`, `debug`, `refactor`, `test`, `review`, `security`, `docs`, `git`, `explain`. |
 
+### Checkpoints (rollback for the agent's own edits)
+
+| File                        | Lines | Responsibility                                                     |
+| --------------------------- | ----- | ------------------------------------------------------------------ |
+| `src/agent/checkpoint.ts`   | 375   | `CheckpointStore`: captures a file's bytes before a tool mutates it (first capture per turn wins), writes one manifest + a mirrored file tree per turn under `.agent/checkpoints/<id>/`, and restores a turn — deleting files the agent created — while checkpointing the state it leaves, so a rollback is itself reversible. Atomic `.tmp` + `rename` writes, path-escape checks on both the backup slot and the restore target, prune-to-`keep`, `clear()`, `sizeBytes()`. |
+
 ### Memory (cross-session learning)
 
 | File                        | Lines | Responsibility                                                     |
@@ -130,12 +136,12 @@ Every file, what it does, and why it exists. ~5,300 lines of TypeScript + 10 ski
 
 | File                        | Lines | Responsibility                                                     |
 | --------------------------- | ----- | ------------------------------------------------------------------ |
-| `src/server/http.ts`        | 449   | `node:http` server — no framework. Static files jailed inside `web/`, optional token auth on `/api/*`, CORS for local tools, and every endpoint: `events` (SSE), `state`, `health`, `chat`, `interrupt`, `permission`, `permissions`, `model`, `skill`, `clear`, `undo`, `compact`, `memory` (+`vote`, DELETE), `feedback`. Reports the port it actually bound, and `closeAllConnections()` so Ctrl+C does not hang on keep-alive sockets. |
-| `src/server/session.ts`     | 220   | `WebSession`: one `AgentRuntime`, many tabs. Subscribes to `UIEvent`s and fans them out over SSE, heartbeats every 25s, sends a full `snapshot()` to late joiners, serialises turns (`send`/`interrupt`), and reports `isBusy`. |
+| `src/server/http.ts`        | 505   | `node:http` server — no framework. Static files jailed inside `web/`, optional token auth on `/api/*`, CORS for local tools, and every endpoint: `events` (SSE), `state`, `health`, `chat`, `interrupt`, `permission`, `permissions`, `model`, `skill`, `clear`, `undo`, `compact`, `memory` (+`vote`, DELETE), `feedback`, `checkpoints`, `restore`. Reports the port it actually bound, and `closeAllConnections()` so Ctrl+C does not hang on keep-alive sockets. |
+| `src/server/session.ts`     | 240   | `WebSession`: one `AgentRuntime`, many tabs. Subscribes to `UIEvent`s and fans them out over SSE, heartbeats every 25s, sends a full `snapshot()` to late joiners, serialises turns (`send`/`interrupt`), and reports `isBusy`. |
 | `src/server/web-prompter.ts`| 110   | Bridges the blocking `await ui.ask()` inside the loop to an asynchronous browser answer: each request becomes a promise parked in a `Map` keyed by UUID; `POST /api/permission` resolves it. Timeout and `cancelAll` both resolve to **deny**. |
-| `web/index.html`            | 132   | App shell: topbar, sidebar (plan / skills / memory), transcript, composer, permission dialog, token dialog. Semantic, no framework. |
-| `web/styles.css`            | 753   | Design tokens (8px scale, one accent, AA-contrast text), dark theme, responsive at 900px, `prefers-reduced-motion`, visible focus rings, reserved heights so streaming cannot shift the layout. |
-| `web/app.js`                | 1108  | The whole client: one `EventSource` drives rendering (streaming markdown, tool cards, plan/skills/memory panels, permission + token dialogs, 👍/👎 feedback, model and mode switching). Escapes every untrusted string before it reaches the DOM; no `alert`/`confirm`/`prompt`, so it works inside sandboxed iframes. |
+| `web/index.html`            | 145   | App shell: topbar, sidebar (plan / skills / memory), transcript, composer, permission dialog, token dialog. Semantic, no framework. |
+| `web/styles.css`            | 829   | Design tokens (8px scale, one accent, AA-contrast text), dark theme, responsive at 900px, `prefers-reduced-motion`, visible focus rings, reserved heights so streaming cannot shift the layout. |
+| `web/app.js`                | 1194  | The whole client: one `EventSource` drives rendering (streaming markdown, tool cards, plan/skills/memory panels, permission + token dialogs, 👍/👎 feedback, model and mode switching). Escapes every untrusted string before it reaches the DOM; no `alert`/`confirm`/`prompt`, so it works inside sandboxed iframes. |
 
 ### Safety & UI
 
@@ -143,17 +149,18 @@ Every file, what it does, and why it exists. ~5,300 lines of TypeScript + 10 ski
 | -------------------------- | ----- | ------------------------------------------------------------------- |
 | `src/safety/paths.ts`      | 90    | Workspace jail, sensitive-path detection, ignore lists, truncation, binary sniffing. |
 | `src/safety/permissions.ts`| 132   | `ask`/`auto`/`readonly` policy, hard-deny regex list, session-scoped "always" approvals. |
-| `src/ui/ui.ts`             | 272   | All output: streaming text, spinner, tool trace, diffs, approval hook. Injectable sink for tests. Every method also emits a typed `UIEvent` to an optional `listener` — that is how the web UI mirrors the agent without the core knowing about it. |
+| `src/ui/ui.ts`             | 287   | All output: streaming text, spinner, tool trace, diffs, approval hook. Injectable sink for tests. Every method also emits a typed `UIEvent` to an optional `listener` — that is how the web UI mirrors the agent without the core knowing about it. |
 | `src/util/ansi.ts`         | 36    | ANSI colour helpers. No `chalk`.                                     |
 | `src/util/diff.ts`         | 89    | LCS line diff with context collapsing.                               |
 | `src/util/session.ts`      | 29    | Per-session state: approvals, counters, plan, token totals.          |
 
-### Tests (200, no model required)
+### Tests (231, no model required)
 
 | File                        | Tests | Covers                                                              |
 | --------------------------- | ----- | ------------------------------------------------------------------- |
 | `tests/loop.test.ts`        | 11    | End-to-end agent runs: happy path, prose-JSON recovery, arg aliases, error feedback, loop breaker, readonly denial, catastrophic command block, real bash execution, step limit, plan injection. |
-| `tests/server.test.ts`      | 27    | `WebPrompter` (round-trip, timeout→deny, no-client default, `cancelAll`), static serving + path-traversal jail, 405/404s, `/api/state`, token auth, `/api/health`, a full turn over real SSE, late-joiner snapshots, the permission gate answered over HTTP (yes / no / expiry), mode + model switching, clear/undo/interrupt, memory CRUD and feedback. |
+| `tests/server.test.ts`      | 33    | `WebPrompter` (round-trip, timeout→deny, no-client default, `cancelAll`), static serving + path-traversal jail, 405/404s, `/api/state`, token auth, `/api/health`, a full turn over real SSE, late-joiner snapshots, the permission gate answered over HTTP (yes / no / expiry), mode + model switching, clear/undo/interrupt, memory CRUD and feedback, and the checkpoint endpoints (snapshot, the `checkpoint` event over SSE, restore by id and by prefix, restore-of-a-restore, the 404/400 paths, clear). |
+| `tests/checkpoint.test.ts`  | 25    | Capture/restore for modified and newly-created files, first-capture-wins across three writes to one file, capture with and without preloaded content, no-op turns leaving nothing on disk, `discard()`, manifest persistence and reload, newest-first listing, pruning, a crash-corrupted manifest, `clear()`, size accounting, restore-of-a-restore, the `restoredAt` marker surviving a reload, a missing backup leaving the file untouched, a `../` capture attempt that is dropped rather than written, dotted filenames, and six runtime integrations (write, edit, create-then-delete, read-only turn, an aborted turn still reversible, the config switch). |
 | `tests/memory.test.ts`      | 21    | Saving, dedup, empty-text refusal, JSONL persistence, truncated-line recovery, voting, forgetting, recall ranking (tags, limits, sunk memories), the injection block, the `remember` tool, and runtime integration (injection, `remember` registration, system prompt). |
 | `tests/skills.test.ts`      | 69    | Frontmatter parsing, discovery + override precedence, index compactness, body capping, the 23-case routing table, `use_skill` (load, no-double-pay, resource jail), auto-injection, `/clear` forgetting. |
 | `tests/tools.test.ts`       | 26    | Every tool: read/write/edit/list/search/todo, including fuzzy indentation, ambiguity, deletion, globbing, workspace escape. |
@@ -215,6 +222,15 @@ remembering corrections*. So memories are plain text in a JSONL file, ranked by 
 rather than embeddings (free, instant, offline, explainable, and enough for a few hundred entries),
 and injected as a bracketed note. Being able to read and edit the file is the feature: "why did it do
 that?" has an answer.
+
+**Checkpoints capture at the moment of mutation, and the first capture wins.** Snapshotting the whole
+workspace before a turn would be expensive and mostly wasted; snapshotting inside the two tools that
+mutate files costs nothing extra, because both had already read the file for their diff. Keeping only
+the first backup per file per turn is the single rule that makes a restore land on the *pre-turn*
+state instead of an intermediate one. And because `restore()` checkpoints the state it is about to
+leave, rolling back is reversible — which is why neither UI needs a confirmation dialog for it. Scope
+is stated rather than implied: `write_file` and `edit_file` are covered, `bash` is not, and the system
+prompt says so instead of letting the model promise a universal undo.
 
 **One event bus, two frontends.** `UI` emits typed `UIEvent`s to an optional `listener` *and* writes
 to the terminal. The REPL and the browser are consumers of the same stream, so no rendering logic is

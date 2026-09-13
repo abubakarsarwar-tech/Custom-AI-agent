@@ -6,6 +6,7 @@ import { normalizeArgs } from '../tools/arg-aliases.js';
 import type { UI } from '../ui/ui.js';
 import type { SkillLibrary } from '../skills/library.js';
 import type { LessonStore } from '../memory/lessons.js';
+import type { CheckpointStore } from './checkpoint.js';
 import type { SessionState } from '../util/session.js';
 import { compactHistory } from './compact.js';
 import { StreamEcho } from './stream-filter.js';
@@ -21,6 +22,7 @@ export interface AgentDeps {
   systemPrompt: string;
   skills: SkillLibrary | null;
   memory: LessonStore | null;
+  checkpoint: CheckpointStore | null;
 }
 
 export interface TurnResult {
@@ -57,7 +59,7 @@ export async function runTurn(
   deps: AgentDeps,
   signal: AbortSignal,
 ): Promise<TurnResult> {
-  const { provider, registry, permissions, ui, config, session, skills, memory } = deps;
+  const { provider, registry, permissions, ui, config, session, skills, memory, checkpoint } = deps;
 
   messages.push({ role: 'user', content: userText });
 
@@ -218,6 +220,7 @@ export async function runTurn(
         signal,
         skills,
         memory,
+        checkpoint,
       });
       const ms = Date.now() - t0;
       session.totals.toolMs += ms;

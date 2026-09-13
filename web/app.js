@@ -60,6 +60,10 @@ const el = {
   memoryList: $('memory-list'),
   memoryCount: $('memory-count'),
   memoryEmpty: $('memory-empty'),
+  cpList: $('cp-list'),
+  cpCount: $('cp-count'),
+  cpEmpty: $('cp-empty'),
+  cpRestoreLast: $('cp-restore-last'),
   memoryForm: $('memory-form'),
   memoryInput: $('memory-input'),
   overlay: $('overlay'),
@@ -523,6 +527,81 @@ function markSkillLoaded(name) {
   if (snap) for (const s of snap.skills) if (s.name === name) s.loaded = true;
 }
 
+/* ---------------- checkpoints ---------------- */
+
+function renderCheckpoints(items, count) {
+  el.cpList.replaceChildren();
+  const list = items ?? [];
+
+  for (const cp of list) {
+    const item = make('div', 'cp-item');
+    item.dataset.restored = String(Boolean(cp.restoredAt));
+
+    const top = make('div', 'cp-top');
+    top.appendChild(make('span', 'cp-label', cp.label || '(no label)'));
+    top.appendChild(make('span', 'cp-time', String(cp.createdAt ?? '').slice(11, 19)));
+    item.appendChild(top);
+
+    const files = make('div', 'cp-files');
+    for (const f of (cp.files ?? []).slice(0, 6)) {
+      const chip = make('span', 'cp-file', `${f.existed ? '' : '+'}${f.rel}`);
+      chip.dataset.created = String(!f.existed);
+      chip.title = f.existed
+        ? `${f.rel} — restore its previous content`
+        : `${f.rel} — created by the agent, so restoring deletes it`;
+      files.appendChild(chip);
+    }
+    if ((cp.files ?? []).length > 6) {
+      files.appendChild(make('span', 'cp-file', `+${cp.files.length - 6} more`));
+    }
+    item.appendChild(files);
+
+    const bottom = make('div', 'cp-bottom');
+    const btn = make('button', 'cp-restore', '↩ Restore');
+    btn.type = 'button';
+    btn.title = `Put the workspace back the way it was before: ${cp.label || cp.id}`;
+    btn.addEventListener('click', () => restoreCheckpoint(cp.id, btn));
+    bottom.appendChild(btn);
+    bottom.appendChild(make('span', 'cp-note', cp.restoredAt ? 'restored once' : `${cp.files.length} file(s)`));
+    item.appendChild(bottom);
+
+    el.cpList.appendChild(item);
+  }
+
+  el.cpEmpty.style.display = list.length ? 'none' : '';
+  el.cpCount.textContent = count !== undefined ? String(count) : String(list.length);
+  el.cpRestoreLast.disabled = list.length === 0;
+  el.cpRestoreLast.title = list.length
+    ? `Roll back "${list[0].label || list[0].id}"`
+    : 'No file changes yet';
+}
+
+async function restoreCheckpoint(id, btn) {
+  if (btn) btn.disabled = true;
+  el.cpRestoreLast.disabled = true;
+  const res = await api('/api/restore', { method: 'POST', body: id ? { id } : {} });
+  if (!res.ok) {
+    addNoteLine(res.error ?? 'restore failed', 'error');
+    refreshCheckpoints();
+    return;
+  }
+  const d = res.data;
+  const parts = [
+    (d.reverted ?? []).length ? `${d.reverted.length} file(s) reverted` : '',
+    (d.deleted ?? []).length ? `${d.deleted.length} created file(s) removed` : '',
+  ].filter(Boolean);
+  addNoteLine(`restored ${d.id}${parts.length ? ` — ${parts.join(', ')}` : ''}`, 'note');
+  addNoteLine('that rollback is itself checkpointed — restore again to put it back', 'note');
+  await refreshCheckpoints();
+}
+
+async function refreshCheckpoints() {
+  const res = await api('/api/checkpoints');
+  if (res.ok) renderCheckpoints(res.data.checkpoints, res.data.count);
+}
+
+el.cpRestoreLast.addEventListener('click', () => restoreCheckpoint(null, null));
+
 function renderMemory(lessons, count) {
   el.memoryList.replaceChildren();
   const list = lessons ?? [];
@@ -791,6 +870,7 @@ el.clear.addEventListener('click', async () => {
   el.transcript.replaceChildren();
   el.transcript.appendChild(el.welcome);
   renderPlan([]);
+  void refreshCheckpoints();
   state.lastAssistantEl = null;
   state.toolsEl = null;
   addNoteLine('history cleared', 'note');
@@ -922,6 +1002,7 @@ function applySnapshot(snap) {
   el.model.value = snap.model;
 
   renderPlan(snap.plan);
+  renderCheckpoints(snap.checkpoints?.items, snap.checkpoints?.count);
   renderSkills(snap.skills);
   renderMemory(snap.memory?.lessons, snap.memory?.count);
 
@@ -1006,6 +1087,11 @@ function handleEvent(type, data) {
       markSkillLoaded(data.name);
       break;
 
+    case 'checkpoint':
+      // A turn just changed files — pull the authoritative list.
+      void refreshCheckpoints();
+      break;
+
     case 'permission_request':
       enqueuePermission(data);
       break;
@@ -1076,7 +1162,7 @@ function connect() {
   const types = [
     'snapshot', 'assistant_delta', 'assistant_end', 'tool_start', 'tool_end',
     'spinner', 'spinner_stop', 'note', 'warn', 'error', 'plan', 'skill_loaded',
-    'permission_request', 'permission_response', 'turn_end', 'log',
+    'permission_request', 'permission_response', 'turn_end', 'checkpoint', 'log',
   ];
   for (const t of types) {
     source.addEventListener(t, (e) => {

@@ -197,6 +197,15 @@ export async function startServer(
           return;
         }
 
+        if (url.pathname === '/api/checkpoints' && method === 'GET') {
+          json(res, 200, {
+            count: rt.checkpoints?.count ?? 0,
+            root: rt.checkpoints?.root ?? null,
+            checkpoints: rt.checkpointList(),
+          });
+          return;
+        }
+
         if (url.pathname === '/api/memory' && method === 'GET') {
           json(res, 200, {
             count: rt.memory?.count ?? 0,
@@ -344,6 +353,53 @@ export async function startServer(
             return;
           }
           json(res, (await rt.memory.remove(id)) ? 200 : 404, { ok: true });
+          return;
+        }
+
+        if (url.pathname === '/api/restore' && method === 'POST') {
+          if (!rt.checkpoints) {
+            json(res, 400, { error: 'checkpoints are disabled (LCA_CHECKPOINTS=false)' });
+            return;
+          }
+          const body = await readBody(req);
+          const wanted = String(body.id ?? '').trim();
+          const all = rt.checkpointList();
+          if (all.length === 0) {
+            json(res, 404, { error: 'no checkpoints yet — no turn has changed a file' });
+            return;
+          }
+          // No id means "undo the last thing you did", which is the common case.
+          const target = wanted
+            ? all.find((cp) => cp.id === wanted || cp.id.startsWith(wanted))
+            : all[0];
+          if (!target) {
+            json(res, 404, { error: `no checkpoint matching "${wanted}"`, available: all.map((cp) => cp.id) });
+            return;
+          }
+          const result = await rt.restoreCheckpoint(target.id);
+          if (!result) {
+            json(res, 500, { error: `could not restore ${target.id}` });
+            return;
+          }
+          json(res, 200, {
+            id: target.id,
+            label: target.label,
+            reverted: result.reverted,
+            deleted: result.deleted,
+            // the state we just left is itself checkpointed, so this is reversible
+            undoId: rt.checkpointList()[0]?.id ?? null,
+          });
+          return;
+        }
+
+        if (url.pathname === '/api/checkpoints/clear' && method === 'POST') {
+          if (!rt.checkpoints) {
+            json(res, 400, { error: 'checkpoints are disabled' });
+            return;
+          }
+          const removed = await rt.checkpoints.clear();
+          session.broadcast({ type: 'note', text: `cleared ${removed} checkpoint(s)` });
+          json(res, 200, { removed });
           return;
         }
 

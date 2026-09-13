@@ -605,3 +605,109 @@ describe('memory through the API', () => {
     expect(bad.status).toBe(400);
   });
 });
+
+/* ---------------- checkpoints over HTTP ---------------- */
+
+describe('checkpoints through the API', () => {
+  it('appears in the snapshot and streams a checkpoint event when a turn writes', async () => {
+    const h = await serve(writeTurn);
+    const sse = openSse(h);
+
+    const snap = (await sse.waitFor('snapshot')) as {
+      checkpoints: { count: number; items: unknown[] };
+    };
+    expect(snap.checkpoints.count).toBe(0);
+    expect(snap.checkpoints.items).toEqual([]);
+
+    await post(h, '/api/chat', { text: 'write the file' });
+    const cp = (await sse.waitFor('checkpoint', 15_000)) as {
+      id: string;
+      label: string;
+      files: string[];
+    };
+    expect(cp.files).toEqual(['out.txt']);
+    expect(cp.label).toBe('write the file');
+
+    const listed = (await (await get(h, '/api/checkpoints')).json()) as {
+      count: number;
+      root: string;
+      checkpoints: Array<{ id: string; files: Array<{ rel: string; existed: boolean; bytes: number }> }>;
+    };
+    expect(listed.count).toBe(1);
+    expect(listed.root).toContain('checkpoints');
+    // existed:false + 0 bytes = the agent created this file, so restoring deletes it
+    expect(listed.checkpoints[0]!.files[0]).toEqual({ rel: 'out.txt', existed: false, bytes: 0 });
+  }, 20_000);
+
+  it('rolls the workspace back, and the rollback is itself reversible', async () => {
+    const h = await serve(writeTurn);
+    const sse = openSse(h);
+    await sse.waitFor('snapshot');
+
+    await post(h, '/api/chat', { text: 'write the file' });
+    await sse.waitFor('turn_end', 15_000);
+    const file = path.join(h.sbx.dir, 'out.txt');
+    expect(await readFile(file, 'utf8')).toBe('hello\n');
+
+    // no id = "undo the last thing you did"
+    const res = await post(h, '/api/restore', {});
+    expect(res.status).toBe(200);
+    expect(res.data.deleted).toEqual(['out.txt']);
+    expect(res.data.undoId).toBeTypeOf('string');
+    await expect(readFile(file, 'utf8')).rejects.toThrow();
+
+    // ...and undoing the undo brings it back
+    const again = await post(h, '/api/restore', { id: String(res.data.undoId) });
+    expect(again.status).toBe(200);
+    expect(again.data.reverted).toEqual(['out.txt']);
+    expect(await readFile(file, 'utf8')).toBe('hello\n');
+  }, 20_000);
+
+  it('accepts an id prefix and rejects one that does not exist', async () => {
+    const h = await serve(writeTurn);
+    const sse = openSse(h);
+    await sse.waitFor('snapshot');
+    await post(h, '/api/chat', { text: 'write the file' });
+    const cp = (await sse.waitFor('checkpoint', 15_000)) as { id: string };
+
+    const prefixed = await post(h, '/api/restore', { id: cp.id.slice(0, 8) });
+    expect(prefixed.status).toBe(200);
+
+    const missing = await post(h, '/api/restore', { id: 'cp_doesnotexist' });
+    expect(missing.status).toBe(404);
+    expect(missing.data.available).toBeDefined();
+  }, 20_000);
+
+  it('404s when nothing has been checkpointed yet', async () => {
+    const h = await serve([{ text: 'just talking' }]);
+    const res = await post(h, '/api/restore', {});
+    expect(res.status).toBe(404);
+    expect(String(res.data.error)).toMatch(/no checkpoints/i);
+  });
+
+  it('400s when checkpointing is switched off', async () => {
+    const h = await serve(writeTurn, { checkpointsEnabled: false });
+    const list = await (await get(h, '/api/checkpoints')).json();
+    expect((list as { count: number }).count).toBe(0);
+    expect((list as { root: string | null }).root).toBeNull();
+
+    const res = await post(h, '/api/restore', {});
+    expect(res.status).toBe(400);
+    expect(String(res.data.error)).toMatch(/disabled/i);
+  });
+
+  it('clears every checkpoint on request', async () => {
+    const h = await serve(writeTurn);
+    const sse = openSse(h);
+    await sse.waitFor('snapshot');
+    await post(h, '/api/chat', { text: 'write the file' });
+    await sse.waitFor('checkpoint', 15_000);
+
+    const cleared = await post(h, '/api/checkpoints/clear', {});
+    expect(cleared.status).toBe(200);
+    expect(cleared.data.removed).toBe(1);
+
+    const after = (await (await get(h, '/api/checkpoints')).json()) as { count: number };
+    expect(after.count).toBe(0);
+  }, 20_000);
+});

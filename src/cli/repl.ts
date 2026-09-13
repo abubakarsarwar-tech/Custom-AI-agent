@@ -17,6 +17,8 @@ ${c.bold('Commands')}
   /plan                  show the agent's current todo plan
   /skills                list specialised skills (* = already loaded)
   /skill <name>          load one skill now (e.g. /skill design)
+  /checkpoints           list rollback points for the agent's file changes
+  /restore [id]          roll the workspace back (no id = the latest turn)
   /memory                list what the agent remembers about this project
   /remember <text>       save a fact for future sessions
   /forget <id>           delete one remembered fact
@@ -127,6 +129,7 @@ export async function startRepl(rt: AgentRuntime, initialPrompt?: string): Promi
           signal: ac2.signal,
           skills: rt.skills,
           memory: rt.memory,
+          checkpoint: rt.checkpoints,
         },
       );
       ui.line(res.content);
@@ -296,6 +299,59 @@ export async function startRepl(rt: AgentRuntime, initialPrompt?: string): Promi
 
       case 'undo': {
         ui.info(rt.undoLast() ? 'last exchange removed' : 'nothing to undo');
+        return false;
+      }
+
+      case 'checkpoints': {
+        if (!rt.checkpoints) {
+          ui.warn('checkpoints are disabled (LCA_CHECKPOINTS=false)');
+          return false;
+        }
+        const all = rt.checkpointList();
+        ui.line(c.bold(`Checkpoints (${all.length}) — ${rt.checkpoints.root}`));
+        if (all.length === 0) {
+          ui.dim('  none yet. One is saved automatically for any turn that changes a file.');
+          ui.dim('  covers write_file and edit_file; shell commands are what git is for.');
+          return false;
+        }
+        for (const cp of all.slice(0, 12)) {
+          const when = cp.createdAt.slice(11, 19);
+          const files = cp.files.map((f) => `${f.existed ? '' : '+'}${f.rel}`);
+          const shown = files.slice(0, 3).join(', ') + (files.length > 3 ? ` +${files.length - 3}` : '');
+          const mark = cp.restoredAt ? c.green(' ↩ restored') : '';
+          ui.line(`  ${c.dim(cp.id)} ${c.dim(when)} ${cp.label.slice(0, 44)}`);
+          ui.line(`    ${c.dim(shown)}${mark}`);
+        }
+        ui.dim('  +prefix = the agent created that file, so restoring deletes it');
+        ui.dim('  roll one back with: /restore <id>   (or /restore for the latest)');
+        return false;
+      }
+
+      case 'restore': {
+        if (!rt.checkpoints) {
+          ui.warn('checkpoints are disabled (LCA_CHECKPOINTS=false)');
+          return false;
+        }
+        const all = rt.checkpointList();
+        if (all.length === 0) {
+          ui.info('nothing to restore — no turn has changed a file yet');
+          return false;
+        }
+        const target = arg ? all.find((cp) => cp.id === arg || cp.id.startsWith(arg)) : all[0];
+        if (!target) {
+          ui.error(`no checkpoint matching "${arg}". Try /checkpoints.`);
+          return false;
+        }
+        // Safe without a confirmation prompt: restoring checkpoints the state it
+        // is leaving, so `/restore` twice puts everything back.
+        const result = await rt.restoreCheckpoint(target.id);
+        if (!result) {
+          ui.error(`could not restore ${target.id}`);
+          return false;
+        }
+        for (const f of result.reverted) ui.line(`  ${c.green('↩')} ${f}`);
+        for (const f of result.deleted) ui.line(`  ${c.yellow('-')} ${f} ${c.dim('(created by the agent, removed)')}`);
+        ui.dim('  the state you just left is checkpointed too — /restore again to put it back');
         return false;
       }
 

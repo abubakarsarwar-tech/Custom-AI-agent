@@ -51,6 +51,10 @@ export const writeFileTool: Tool = {
       before = null;
     }
 
+    // Rollback point. We already read the file, so hand the bytes over instead
+    // of making the checkpoint store read it a second time.
+    await ctx.checkpoint?.capture(checked.rel, checked.abs, before);
+
     await mkdir(path.dirname(checked.abs), { recursive: true });
     await writeFile(checked.abs, content, 'utf8');
 

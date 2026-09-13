@@ -141,7 +141,7 @@ npm install
 
 npm run doctor      # 1. health check: Node, RAM, Ollama, model, tool support
 npm run demo        # 2. full agent run with NO model (scripted mock provider)
-npm test            # 3. 200 tests, also no model needed
+npm test            # 3. 231 tests, also no model needed
 npm run dev         # 4. the real thing, in your terminal
 npm run serve:demo  # 5. the same agent in your BROWSER, still no model needed
 ```
@@ -423,6 +423,49 @@ check, so `%2e%2e` and `../` both land back on the app shell); and every model-p
 escaped before it touches the DOM — the markdown renderer escapes the *whole source first*, then
 formats, and only `http(s)` links are ever turned into anchors.
 
+### Layer 9 — Checkpoints (`src/agent/checkpoint.ts`)
+
+Undo for the *files*, not just the conversation. This is the safety feature that makes an autonomous
+agent comfortable to leave running, and it is small enough to audit in one sitting.
+
+**Capture at the moment of mutation.** Before `write_file` or `edit_file` touches disk, it calls
+`ctx.checkpoint.capture(rel, abs, contentAlreadyRead)`. Both tools had already read the file (for the
+diff), so they hand the bytes over and the checkpoint costs **zero extra reads**. `edit_file` captures
+only after it knows the edit will actually apply — no point snapshotting for a change that failed.
+
+**First capture wins.** A turn might write the same file three times; only the first backup is kept.
+That single rule is what makes a restore land on *the state before the turn* rather than some
+intermediate one, and it is why `capture()` returns `false` the second time.
+
+**Layout** is deliberately boring:
+
+```
+.agent/checkpoints/
+  cp_lz1a2b3c_d4e5/
+    manifest.json          { id, label, createdAt, files: [{rel, existed, bytes}] }
+    files/src/app.ts       the exact bytes that were there before
+```
+
+One folder per turn, one manifest each, no shared index file to drift out of sync — `list()` just reads
+the folders. Backups are written to `.tmp` then `rename()`d, so a crash cannot leave a half-written
+backup. `existed: false` means the agent created that file, so restoring *deletes* it.
+
+**Restore is never the irreversible move.** `restore()` first checkpoints the state it is about to
+leave, labelled `state before restoring cp_…`. So a mistaken rollback is one more rollback away from
+being undone, which is why neither UI needs a "are you sure?" dialog. That property changed the design
+of both frontends: no confirmation modals, just a note afterwards saying it can be reversed.
+
+**Turn boundaries.** `runtime.send()` calls `begin(text)` before the loop and `finish()` in a
+`finally`, so an interrupted, failed or step-limited turn is *still* reversible — precisely when you
+most want to roll back. `finish()` returns null when the turn changed nothing, and nothing is written
+to disk at all: a read-only conversation leaves no trace.
+
+**What it does not cover, stated plainly:** `bash`. A shell command can touch anything, including files
+outside the workspace, and no wrapper can track that. That is what git is for, and the system prompt
+says so explicitly rather than letting the model claim "you can always roll back". Pruning keeps the
+newest `LCA_CHECKPOINTS_KEEP` (20) turns and deletes the rest, folders included, so this cannot grow
+without bound.
+
 ---
 
 ## 5. Build your own from scratch
@@ -703,7 +746,8 @@ What this repo has today, and what to build next:
 - [x] `doctor` with hardware-aware model recommendations
 - [x] Memory: cross-session lessons, keyword recall, voting, the `remember` tool
 - [x] Web UI + HTTP API: `lca serve`, SSE streaming, browser permission dialog, multi-tab
-- [x] Mock provider + 200 tests that need no model
+- [x] Checkpointing: every file change is snapshotted per turn, `/restore` rolls it back reversibly
+- [x] Mock provider + 231 tests that need no model
 
 **Next, in the order I would build them**
 
@@ -719,7 +763,6 @@ What this repo has today, and what to build next:
 - [ ] **Diff review mode** — show a patch and require approval before writing, like `git add -p`.
 - [ ] **TUI** — a full-screen *terminal* interface with panels. The browser UI exists (`lca serve`);
       the terminal is still a scrolling log.
-- [ ] **Checkpointing for the web UI** — the browser has Undo for messages, but not for files.
 - [ ] **Editor integration** — an LSP server or a VS Code extension wrapping the same core. The web
       layer already proves the core can be driven from a second frontend.
 

@@ -94,6 +94,8 @@ Inside the REPL:
 | `/model qwen3:8b`   | switch model mid-session                             |
 | `/permissions auto` | stop asking for approval (`ask` \| `auto` \| `readonly`) |
 | `/stats`            | tokens, steps, timings                               |
+| `/checkpoints`      | list rollback points for the agent's file changes     |
+| `/restore [id]`     | roll the workspace back (no id = the latest turn)     |
 | `/memory`           | list what the agent remembers about this project     |
 | `/remember <text>`  | save a fact for future sessions                      |
 | `/forget <id>`      | delete one remembered fact                           |
@@ -243,6 +245,7 @@ Anything the browser does, a script can do. Same port, JSON in, JSON out, SSE fo
 | `POST /api/skill` `{name}` | Load a skill into context |
 | `GET/POST/DELETE /api/memory` · `POST /api/memory/vote` | Read, add, forget and vote on memories |
 | `POST /api/feedback` `{verdict, note?}` | 👍 boosts recalled memories; 👎 sinks them and can save a correction |
+| `GET /api/checkpoints` · `POST /api/restore` · `POST /api/checkpoints/clear` | Roll the workspace back to before any turn |
 | `POST /api/clear` · `POST /api/undo` · `POST /api/compact` | Conversation controls |
 | `GET /api/health` | Provider, model, reachable Ollama models, busy state |
 
@@ -252,6 +255,42 @@ curl -s localhost:8787/api/chat -H 'Content-Type: application/json' \
      -d '{"text":"summarise what this repo does"}'
 curl -N -s localhost:8787/api/events      # watch it work
 ```
+
+---
+
+## Checkpoints — undo for your files
+
+Every turn that changes a file is snapshotted before the change, so you can roll the whole turn back:
+
+```bash
+/checkpoints        # what can be rolled back, newest first
+/restore            # undo the last turn's file changes
+/restore cp_lz1a2b  # undo a specific turn
+```
+
+The same controls are in the web UI's **Checkpoints** panel, one click per turn.
+
+```
+.agent/checkpoints/cp_lz1a2b3c_d4e5/
+  manifest.json          # id, the message that started the turn, the file list
+  files/src/app.ts       # the exact bytes that were there before
+```
+
+Worth knowing:
+
+- **First write wins.** If a turn edits the same file three times, restoring returns it to how it was
+  *before the turn*, not to some intermediate state.
+- **Files the agent created are deleted** on restore — they did not exist before.
+- **Rolling back is itself reversible.** The state you leave is checkpointed too, so a mistaken
+  restore is one more restore away from being undone. That is why there is no "are you sure?" dialog.
+- **Interrupted and failed turns are covered too** — the snapshot is closed in a `finally`.
+- **A read-only turn writes nothing at all.** No checkpoint folder, no disk trace.
+- **`bash` is not covered.** A shell command can touch anything; that is what git is for. The system
+  prompt tells the model so explicitly instead of letting it claim everything is reversible.
+- The newest 20 turns are kept (`LCA_CHECKPOINTS_KEEP`), then the oldest are pruned. Turn it off with
+  `LCA_CHECKPOINTS=false`.
+
+`.agent/checkpoints/` is machine-local state and is gitignored.
 
 ---
 
@@ -313,7 +352,7 @@ npm run dev          # run from source with tsx
 npm run serve        # the web UI + HTTP API on 127.0.0.1:8787
 npm run serve:demo   # the web UI against the scripted mock provider (no Ollama needed)
 npm run typecheck    # strict TS, no emit — src AND tests
-npm test             # 200 tests, no model required
+npm test             # 231 tests, no model required
 npm run build        # compile to dist/
 npm link             # install the `lca` command globally
 ```
@@ -340,6 +379,10 @@ LCA_WORKSPACE=/path/to/repo
 # memory
 LCA_MEMORY=true
 LCA_MEMORY_MAX_INJECT=5
+
+# checkpoints (rollback for the agent's file changes)
+LCA_CHECKPOINTS=true
+LCA_CHECKPOINTS_KEEP=20
 
 # web UI (`lca serve`)
 LCA_WEB_HOST=127.0.0.1

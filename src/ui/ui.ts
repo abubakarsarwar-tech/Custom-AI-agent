@@ -24,6 +24,7 @@ export type UIEvent =
   | { type: 'permission_request'; id: string; tool: string; summary: string; risk: string; command?: string; path?: string }
   | { type: 'permission_response'; id: string; answer: Answer }
   | { type: 'turn_end'; stats: string }
+  | { type: 'checkpoint'; id: string; label: string; files: string[]; createdAt: string }
   | { type: 'plan'; items: Array<{ content: string; status: string }> }
   | { type: 'skill_loaded'; name: string }
   | { type: 'log'; text: string };
@@ -124,12 +125,26 @@ export class UI {
     this.emit({ type: 'permission_response', id, answer });
   }
 
+  emitCheckpoint(cp: { id: string; label: string; files: Array<{ rel: string }>; createdAt: string }): void {
+    this.emit({
+      type: 'checkpoint',
+      id: cp.id,
+      label: cp.label,
+      files: cp.files.map((f) => f.rel),
+      createdAt: cp.createdAt,
+    });
+  }
+
+  // These two emit as `note` as well as printing: an informational line the
+  // browser never sees is a line the user only half gets.
   info(s: string): void {
+    this.emit({ type: 'note', text: s });
     if (this.quiet) return;
     this.out(`${c.cyan('ℹ')} ${s}\n`);
   }
 
   success(s: string): void {
+    this.emit({ type: 'note', text: s });
     if (this.quiet) return;
     this.out(`${c.green('✔')} ${s}\n`);
   }

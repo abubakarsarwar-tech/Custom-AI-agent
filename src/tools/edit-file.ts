@@ -222,6 +222,9 @@ export const editFileTool: Tool = {
       return fail(`Edit produced no change in ${checked.rel}.`);
     }
 
+    // Rollback point — only once we know the edit will actually be applied.
+    await ctx.checkpoint?.capture(checked.rel, checked.abs, original);
+
     await writeFile(checked.abs, updated, 'utf8');
 
     const diff = renderDiff(diffLines(original, updated));
