@@ -4,6 +4,7 @@ import type { SessionState } from '../util/session.js';
 import type { JsonSchema } from '../llm/types.js';
 import type { UI } from '../ui/ui.js';
 import type { SkillLibrary } from '../skills/library.js';
+import type { LessonStore } from '../memory/lessons.js';
 
 export interface ToolResult {
   /** What goes back into the model's context. Keep it tight — tokens are scarce locally. */
@@ -23,6 +24,8 @@ export interface ToolContext {
   signal: AbortSignal;
   /** null when the skills system is switched off. */
   skills: SkillLibrary | null;
+  /** null when memory is switched off. */
+  memory: LessonStore | null;
 }
 
 export interface Tool {

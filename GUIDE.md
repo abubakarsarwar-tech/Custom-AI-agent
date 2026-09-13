@@ -139,11 +139,17 @@ git clone <your-fork>
 cd Custom-AI-agent
 npm install
 
-npm run doctor    # 1. health check: Node, RAM, Ollama, model, tool support
-npm run demo      # 2. full agent run with NO model (scripted mock provider)
-npm test          # 3. 152 tests, also no model needed
-npm run dev       # 4. the real thing
+npm run doctor      # 1. health check: Node, RAM, Ollama, model, tool support
+npm run demo        # 2. full agent run with NO model (scripted mock provider)
+npm test            # 3. 200 tests, also no model needed
+npm run dev         # 4. the real thing, in your terminal
+npm run serve:demo  # 5. the same agent in your BROWSER, still no model needed
 ```
+
+`npm run serve:demo` opens http://127.0.0.1:8787 and drives it with the scripted mock provider, so
+you can see the whole interface — streaming text, tool cards, the permission dialog, the plan and
+memory panels — before Ollama is installed. Send any message and it plays the tour again.
+With Ollama running, `npm run serve` is the real thing.
 
 Try these first tasks, easiest to hardest:
 
@@ -315,6 +321,107 @@ Tuning this taught me three things worth copying:
 Measured on 23 realistic requests: 22 route correctly, and the 23rd is genuinely ambiguous and
 deliberately deferred to the model. `tests/skills.test.ts` contains that table, so a change to a
 trigger list that breaks routing fails the build.
+
+### Layer 7 — Memory (`src/memory/`, `src/tools/remember.ts`)
+
+People ask for "training". A local 7B model cannot be fine-tuned on your laptop in any useful way, and
+even if it could, the thing you actually want is not weight updates — it is *the agent remembering what
+you told it*. So this layer writes corrections down and reads them back.
+
+**Storage** is append-only JSON Lines at `.agent/memory/lessons.jsonl`:
+
+```json
+{"id":"l_mu0b5p6v_kjwc","text":"Use pnpm, never npm","tags":["tooling"],"createdAt":"…","source":"user","score":2}
+```
+
+Append-only because a crash mid-write can then only ever lose the last line, never corrupt the file —
+`load()` skips whatever does not parse. JSONL because you can `cat` it, `grep` it, or fix a bad memory
+in an editor without any tooling. A database here would buy nothing and cost the zero-dependency rule.
+
+**Recall** ranks memories against your message by token overlap:
+
+```
+relevance = Σ shared body tokens
+          + 2 × shared tag tokens        (a tag is a deliberate keyword)
+          + 2 × shared path-like tokens  ("src/agent/loop.ts" beats "the")
+          + min(2, max(0, score))        (trusted memories float up)
+```
+
+Anything below 2 is dropped, and the top `LCA_MEMORY_MAX_INJECT` (5) are injected. Deliberately **not**
+embeddings: that needs a model download, a vector store and a GPU you may not have. Token overlap is
+free, instant, offline, explainable, and good enough for the few hundred memories one project accrues.
+If you outgrow it, `LessonStore.relevant()` is the only function to replace.
+
+**Injection** pushes one extra `user` message that starts with `[remembered from earlier sessions]`.
+Starting with `[` is load-bearing: `undoLast()` and the compactor both skip bracketed system-ish
+messages, so a recalled memory can never be mistaken for something you typed.
+
+**Trust** is a score. Saving the same fact again bumps it instead of duplicating (dedup is on normalised
+text — case, punctuation and whitespace stripped), 👍 raises it, 👎 lowers it, and at −2 the memory
+stops being recalled but stays in the file until you delete it. Sinking rather than deleting matters:
+a wrong memory you can still see is a memory you can diagnose.
+
+**The `remember` tool** lets the model save its own memories — one tool with three modes (`text` to
+save, `query` to search, `forget` to delete) because three tools would cost three times the index
+tokens for one concept. It is registered only when memory is enabled.
+
+Three things worth copying:
+
+1. **Tell the model how to use a memory, not just that it exists.** The injected block says *"follow
+   them unless the code proves one wrong; if one IS wrong, say so and use `remember` to correct it."*
+   Without that, a model either ignores the block or obeys a stale memory over the file in front of it.
+2. **Vote on what was actually recalled, not on everything.** `runtime.lastInjectedLessons` records the
+   ids behind this turn's block, so 👍/👎 has a precise target. Feedback with no target is noise.
+3. **Keep the store inspectable.** Every memory decision is reproducible by reading one small file —
+   which is the only reason "why did it do that?" is answerable.
+
+### Layer 8 — The web UI (`src/server/`, `web/`)
+
+Same agent core, second frontend. The design constraint was that **nothing in the core may know a
+browser exists**, so the whole layer is three adapters.
+
+**1. An event bus, not a second renderer.** `UI` already owned every piece of human-facing output, so
+it gained one field: `listener`. Each method now emits a typed `UIEvent` (`assistant_delta`,
+`tool_start`, `permission_request`, `turn_end`, …) *and* writes to the terminal as before. The REPL and
+the browser are two consumers of one source of truth. Nothing was duplicated, and the terminal did not
+change behaviour at all.
+
+**2. Server-Sent Events, not WebSockets.** The traffic is one-way — server to browser — and every
+action the browser takes is an ordinary `POST`. SSE is a `Content-Type`, survives proxies, reconnects
+by itself (`retry: 3000`), and needs no protocol upgrade handshake. WebSockets would have been more
+machinery for no benefit. A heartbeat comment every 25s keeps intermediaries from closing the socket.
+
+**3. The permission bridge** (`web-prompter.ts`) is the interesting one. The gate is a *blocking call
+deep inside the loop* — `await ui.ask(req)` — but the answer arrives over HTTP seconds later, from a
+different tab, or never. So each request becomes a promise parked in a `Map` keyed by a UUID; the
+event goes out over SSE, `POST /api/permission {id, answer}` resolves it, and the loop continues
+exactly where it was waiting. The timeout default is **deny**: an unattended web agent must never fall
+open. `cancelAll('no')` on interrupt or shutdown means no promise is ever left hanging.
+
+`WebSession` fans events out to every connected tab and hands a late joiner a full `snapshot()` first,
+so a refresh never loses the conversation. There is one `AgentRuntime` shared by all clients — the
+browser is a *view* on a session, not a session per tab.
+
+The server is `node:http` (~350 lines) and the UI is three plain files: `index.html`, `styles.css`,
+`app.js`. No framework, no bundler, no build step — you can `view-source:` the whole thing.
+
+**Three bugs only a browser could find.** They are worth knowing before you build your own:
+
+1. **`quiet` mode was swallowing `assistant_end`.** The terminal's "print only the answer" flag
+   short-circuited `beginAssistant()`, so `streaming` never became true and the end event never
+   fired. A *presentation* flag had changed the *data* stream. Now the message state is tracked
+   independently of whether the decoration is drawn.
+2. **`stopSpinner()` runs on every token.** It emitted `spinner_stop` unconditionally — 63 SSE frames
+   per turn of pure noise. Guarding it on "is a spinner actually active" cut that to one.
+3. **`window.confirm()` and `window.prompt()` are blocked in sandboxed iframes.** Any UI that embeds
+   your page (a preview pane, an IDE) breaks. Clear now arms in place ("Clear" → "Sure?"), and 👎
+   reveals an inline input instead of a prompt.
+
+Security is layered rather than hoped for: bind `127.0.0.1` by default; if you bind wider without a
+token, mint one and print the URL; static files are jailed inside the web folder (`path.resolve` prefix
+check, so `%2e%2e` and `../` both land back on the app shell); and every model-produced string is
+escaped before it touches the DOM — the markdown renderer escapes the *whole source first*, then
+formats, and only `http(s)` links are ever turned into anchors.
 
 ---
 
@@ -585,7 +692,7 @@ What this repo has today, and what to build next:
 **Done**
 
 - [x] Streaming agent loop with tool calling
-- [x] 8 tools: read, write, edit, list, search, bash, plan, use_skill
+- [x] 9 tools: read, write, edit, list, search, bash, plan, use_skill, remember
 - [x] Permission modes + hard-deny list + workspace jail
 - [x] Context compaction with a factual action log
 - [x] Tool-call repair, argument aliases, fuzzy edits (small-model robustness)
@@ -594,7 +701,9 @@ What this repo has today, and what to build next:
 - [x] `AGENTS.md` project rules
 - [x] Skills system: 10 built-in specialisms, progressive disclosure, deterministic auto-routing
 - [x] `doctor` with hardware-aware model recommendations
-- [x] Mock provider + 152 tests that need no model
+- [x] Memory: cross-session lessons, keyword recall, voting, the `remember` tool
+- [x] Web UI + HTTP API: `lca serve`, SSE streaming, browser permission dialog, multi-tab
+- [x] Mock provider + 200 tests that need no model
 
 **Next, in the order I would build them**
 
@@ -608,8 +717,11 @@ What this repo has today, and what to build next:
 - [ ] **Parallel tool calls** — run independent calls concurrently.
 - [ ] **Session persistence** — save history to `.agent/history.jsonl`, resume with `--continue`.
 - [ ] **Diff review mode** — show a patch and require approval before writing, like `git add -p`.
-- [ ] **TUI** — a full-screen interface with panels instead of a scrolling log.
-- [ ] **Editor integration** — an LSP server or a VS Code extension wrapping the same core.
+- [ ] **TUI** — a full-screen *terminal* interface with panels. The browser UI exists (`lca serve`);
+      the terminal is still a scrolling log.
+- [ ] **Checkpointing for the web UI** — the browser has Undo for messages, but not for files.
+- [ ] **Editor integration** — an LSP server or a VS Code extension wrapping the same core. The web
+      layer already proves the core can be driven from a second frontend.
 
 ---
 

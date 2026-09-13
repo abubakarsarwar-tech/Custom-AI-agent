@@ -3,6 +3,33 @@ import { c, spinnerFrames } from '../util/ansi.js';
 
 export type Answer = 'yes' | 'no' | 'always';
 
+/**
+ * Structured events emitted alongside the terminal output.
+ *
+ * A browser cannot render ANSI escapes or a spinner, and it needs to know where
+ * one tool call ends and the next begins. So every interesting thing the UI
+ * does is also published here, and the web server forwards it as SSE. The
+ * terminal path is unchanged; this is purely additive.
+ */
+export type UIEvent =
+  | { type: 'assistant_delta'; text: string }
+  | { type: 'assistant_end' }
+  | { type: 'tool_start'; name: string; summary: string }
+  | { type: 'tool_end'; name: string; ok: boolean; ms: number; preview?: string }
+  | { type: 'note'; text: string }
+  | { type: 'warn'; text: string }
+  | { type: 'error'; text: string }
+  | { type: 'spinner'; label: string }
+  | { type: 'spinner_stop' }
+  | { type: 'permission_request'; id: string; tool: string; summary: string; risk: string; command?: string; path?: string }
+  | { type: 'permission_response'; id: string; answer: Answer }
+  | { type: 'turn_end'; stats: string }
+  | { type: 'plan'; items: Array<{ content: string; status: string }> }
+  | { type: 'skill_loaded'; name: string }
+  | { type: 'log'; text: string };
+
+export type UIListener = (event: UIEvent) => void;
+
 export interface UIOptions {
   /** Suppress everything except the model's answer (for pipes / CI). */
   quiet?: boolean;
@@ -28,7 +55,20 @@ export class UI {
   /** Used when there is no interactive prompt available. */
   nonInteractiveAnswer: Answer = 'no';
 
+  /** Set by the web server to mirror everything to the browser. */
+  listener: UIListener | null = null;
+
+  private emit(event: UIEvent): void {
+    try {
+      this.listener?.(event);
+    } catch {
+      /* a broken SSE client must never break the agent */
+    }
+  }
+
   private spinTimer: NodeJS.Timeout | null = null;
+  /** True between a spinner start and stop, independent of whether it is drawn. */
+  private spinActive = false;
   private spinIndex = 0;
   private spinLabel = '';
   private streaming = false;
@@ -59,6 +99,31 @@ export class UI {
     this.out(`${c.dim(s)}\n`);
   }
 
+  /** Structured log line for the web UI's activity feed. */
+  log(s: string): void {
+    this.emit({ type: 'log', text: s });
+  }
+
+  emitSkill(name: string): void {
+    this.emit({ type: 'skill_loaded', name });
+  }
+
+  emitPlan(items: Array<{ content: string; status: string }>): void {
+    this.emit({ type: 'plan', items });
+  }
+
+  emitTurnEnd(stats: string): void {
+    this.emit({ type: 'turn_end', stats });
+  }
+
+  emitPermission(id: string, detail: Omit<Extract<UIEvent, { type: 'permission_request' }>, 'type' | 'id'>): void {
+    this.emit({ type: 'permission_request', id, ...detail });
+  }
+
+  emitPermissionAnswer(id: string, answer: Answer): void {
+    this.emit({ type: 'permission_response', id, answer });
+  }
+
   info(s: string): void {
     if (this.quiet) return;
     this.out(`${c.cyan('ℹ')} ${s}\n`);
@@ -70,16 +135,19 @@ export class UI {
   }
 
   warn(s: string): void {
+    this.emit({ type: 'warn', text: s });
     if (this.quiet) return;
     this.out(`${c.yellow('⚠')} ${s}\n`);
   }
 
   error(s: string): void {
+    this.emit({ type: 'error', text: s });
     this.out(`${c.red('✖')} ${s}\n`);
   }
 
   /** Permission layer uses this for one-line policy notes. */
   note(s: string): void {
+    this.emit({ type: 'note', text: s });
     if (this.quiet && !this.verbose) return;
     this.dim(`  ${s}`);
   }
@@ -95,22 +163,25 @@ export class UI {
 
   beginAssistant(): void {
     this.stopSpinner();
-    if (this.quiet) return;
+    // `streaming` tracks the message, not the terminal: assistant_end must
+    // reach the web UI even when quiet mode suppresses the decoration.
     if (!this.streaming) {
-      this.out(c.green('\n● '));
       this.streaming = true;
+      if (!this.quiet) this.out(c.green('\n● '));
     }
   }
 
   chunk(text: string): void {
     this.stopSpinner();
+    this.emit({ type: 'assistant_delta', text });
     this.out(text);
   }
 
   endAssistant(): void {
     if (this.streaming) {
-      this.out('\n');
       this.streaming = false;
+      if (!this.quiet) this.out('\n');
+      this.emit({ type: 'assistant_end' });
     }
   }
 
@@ -118,6 +189,7 @@ export class UI {
 
   toolStart(name: string, summary: string): void {
     this.endAssistant();
+    this.emit({ type: 'tool_start', name, summary });
     if (this.quiet && !this.verbose) return;
     this.out(`${c.blue('⚒')} ${c.bold(name)} ${c.dim(summary.slice(0, 160))}\n`);
   }
@@ -128,6 +200,7 @@ export class UI {
   }
 
   toolEnd(name: string, ok: boolean, ms: number, preview?: string): void {
+    this.emit({ type: 'tool_end', name, ok, ms, ...(preview ? { preview } : {}) });
     if (this.quiet && !this.verbose) return;
     const mark = ok ? c.green('✔') : c.red('✖');
     this.out(`  ${mark} ${c.dim(`${name} · ${ms}ms`)}\n`);
@@ -142,8 +215,16 @@ export class UI {
   /* ---------------- spinner ---------------- */
 
   startSpinner(label: string): void {
-    if (this.quiet || !process.stdout.isTTY) return;
+    const alreadySpinning = this.spinActive;
+    if (this.quiet || !process.stdout.isTTY) {
+      if (!alreadySpinning) this.emit({ type: 'spinner', label });
+      this.spinActive = true;
+      this.spinLabel = label;
+      return;
+    }
     this.stopSpinner();
+    if (!alreadySpinning) this.emit({ type: 'spinner', label });
+    this.spinActive = true;
     this.spinLabel = label;
     this.spinIndex = 0;
     const draw = (): void => {
@@ -156,10 +237,15 @@ export class UI {
   }
 
   setSpinnerLabel(label: string): void {
+    if (this.spinActive && label !== this.spinLabel) this.emit({ type: 'spinner', label });
     this.spinLabel = label;
   }
 
   stopSpinner(): void {
+    if (this.spinActive) {
+      this.spinActive = false;
+      this.emit({ type: 'spinner_stop' });
+    }
     if (this.spinTimer) {
       clearInterval(this.spinTimer);
       this.spinTimer = null;

@@ -5,6 +5,7 @@ import type { ToolRegistry } from '../tools/registry.js';
 import { normalizeArgs } from '../tools/arg-aliases.js';
 import type { UI } from '../ui/ui.js';
 import type { SkillLibrary } from '../skills/library.js';
+import type { LessonStore } from '../memory/lessons.js';
 import type { SessionState } from '../util/session.js';
 import { compactHistory } from './compact.js';
 import { StreamEcho } from './stream-filter.js';
@@ -19,6 +20,7 @@ export interface AgentDeps {
   session: SessionState;
   systemPrompt: string;
   skills: SkillLibrary | null;
+  memory: LessonStore | null;
 }
 
 export interface TurnResult {
@@ -55,7 +57,7 @@ export async function runTurn(
   deps: AgentDeps,
   signal: AbortSignal,
 ): Promise<TurnResult> {
-  const { provider, registry, permissions, ui, config, session, skills } = deps;
+  const { provider, registry, permissions, ui, config, session, skills, memory } = deps;
 
   messages.push({ role: 'user', content: userText });
 
@@ -215,6 +217,7 @@ export async function runTurn(
         ui,
         signal,
         skills,
+        memory,
       });
       const ms = Date.now() - t0;
       session.totals.toolMs += ms;

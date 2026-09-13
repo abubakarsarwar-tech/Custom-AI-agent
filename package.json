@@ -12,18 +12,23 @@
   },
   "files": [
     "dist",
+    "web",
+    "skills",
     "README.md"
   ],
   "scripts": {
     "dev": "tsx src/index.ts",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
-    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json",
     "test": "vitest run",
     "test:watch": "vitest",
     "doctor": "tsx src/index.ts doctor",
     "demo": "tsx src/index.ts demo -v",
-    "demo:sloppy": "tsx src/index.ts demo --sloppy -v"
+    "demo:sloppy": "tsx src/index.ts demo --sloppy -v",
+    "serve": "tsx src/index.ts serve",
+    "serve:demo": "tsx src/index.ts serve --provider mock",
+    "serve:lan": "tsx src/index.ts serve --host 0.0.0.0"
   },
   "devDependencies": {
     "@types/node": "^22.10.2",

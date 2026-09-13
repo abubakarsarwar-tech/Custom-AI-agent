@@ -17,6 +17,9 @@ ${c.bold('Commands')}
   /plan                  show the agent's current todo plan
   /skills                list specialised skills (* = already loaded)
   /skill <name>          load one skill now (e.g. /skill design)
+  /memory                list what the agent remembers about this project
+  /remember <text>       save a fact for future sessions
+  /forget <id>           delete one remembered fact
   /tools                 list the tools the model can call
   /permissions [mode]    show or set mode: ask | auto | readonly
   /ctx                   show the environment block fed to the model
@@ -123,6 +126,7 @@ export async function startRepl(rt: AgentRuntime, initialPrompt?: string): Promi
           ui,
           signal: ac2.signal,
           skills: rt.skills,
+          memory: rt.memory,
         },
       );
       ui.line(res.content);
@@ -292,6 +296,58 @@ export async function startRepl(rt: AgentRuntime, initialPrompt?: string): Promi
 
       case 'undo': {
         ui.info(rt.undoLast() ? 'last exchange removed' : 'nothing to undo');
+        return false;
+      }
+
+      case 'memory': {
+        if (!rt.memory) {
+          ui.warn('memory is disabled (LCA_MEMORY=false)');
+          return false;
+        }
+        const all = rt.memory.all();
+        ui.line(c.bold(`Remembered (${all.length}) — ${rt.memory.path}`));
+        if (all.length === 0) {
+          ui.dim('  nothing yet. Save one with: /remember use pnpm, never npm');
+          return false;
+        }
+        for (const l of all.slice().reverse()) {
+          const score = l.score === 0 ? '' : c.dim(` [${l.score > 0 ? '+' : ''}${l.score}]`);
+          const tags = l.tags.length ? c.dim(` #${l.tags.join(' #')}`) : '';
+          ui.line(`  ${c.dim(l.id)} ${l.text}${score}${tags}`);
+        }
+        ui.dim('  relevant ones are injected automatically each turn · /forget <id> to remove');
+        return false;
+      }
+
+      case 'remember': {
+        if (!rt.memory) {
+          ui.warn('memory is disabled (LCA_MEMORY=false)');
+          return false;
+        }
+        if (!arg) {
+          ui.error('usage: /remember <what the agent should never forget>');
+          return false;
+        }
+        try {
+          const lesson = await rt.memory.add(arg, { source: 'user', tags: ['user'] });
+          ui.success(`remembered: ${lesson.text}`);
+          ui.dim(`  ${lesson.id} — recalled automatically when a message matches`);
+        } catch (err) {
+          ui.error(err instanceof Error ? err.message : String(err));
+        }
+        return false;
+      }
+
+      case 'forget': {
+        if (!rt.memory) {
+          ui.warn('memory is disabled (LCA_MEMORY=false)');
+          return false;
+        }
+        if (!arg) {
+          ui.error('usage: /forget <id>   (see /memory for ids)');
+          return false;
+        }
+        ui.info((await rt.memory.remove(arg)) ? `forgot ${arg}` : `no memory with id "${arg}"`);
         return false;
       }
 

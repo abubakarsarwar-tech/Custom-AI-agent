@@ -6,6 +6,8 @@ import { ToolRegistry } from '../tools/registry.js';
 import { useSkillTool } from '../tools/use-skill.js';
 import { ALL_TOOLS } from '../tools/registry.js';
 import { SkillLibrary } from '../skills/library.js';
+import { LessonStore } from '../memory/lessons.js';
+import { rememberTool } from '../tools/remember.js';
 import type { UI } from '../ui/ui.js';
 import { newSession, type SessionState } from '../util/session.js';
 import { compactHistory } from './compact.js';
@@ -40,26 +42,35 @@ export class AgentRuntime {
   readonly registry: ToolRegistry;
   /** Always present; `enabled=false` when skills are switched off. */
   skills: SkillLibrary;
+  /** Cross-session memory. null when disabled. */
+  memory: LessonStore | null;
   readonly permissions: PermissionGate;
   readonly session: SessionState;
   messages: Message[] = [];
   systemPrompt = '';
   repoContext = '';
+  /** Lesson ids injected into the most recent turn, so feedback can vote on them. */
+  lastInjectedLessons: string[] = [];
   private readonly factory: ProviderFactory;
 
-  private constructor(opts: RuntimeOptions, skills: SkillLibrary) {
+  private constructor(opts: RuntimeOptions, skills: SkillLibrary, memory: LessonStore | null) {
     this.ui = opts.ui;
     this.config = opts.config;
     this.factory = opts.factory ?? defaultProviderFactory;
     this.provider = opts.provider ?? this.factory(opts.config);
     this.skills = skills;
-    this.registry = opts.registry ?? new ToolRegistry(ALL_TOOLS);
+    this.memory = memory;
+    const tools = memory ? [...ALL_TOOLS, rememberTool] : ALL_TOOLS;
+    this.registry = opts.registry ?? new ToolRegistry(tools);
     // use_skill exists only when there are skills to use — that keeps its schema
     // out of the prompt (~90 tokens) when the system is switched off. Enforced
     // here rather than at construction so a caller-supplied registry cannot
     // silently lose skill support.
     if (skills.enabled && skills.count > 0 && !this.registry.has(useSkillTool.name)) {
       this.registry.register(useSkillTool);
+    }
+    if (memory && !this.registry.has(rememberTool.name)) {
+      this.registry.register(rememberTool);
     }
     this.session = newSession(opts.config);
     this.permissions = new PermissionGate(opts.config.permissionMode, this.session, opts.ui);
@@ -71,7 +82,10 @@ export class AgentRuntime {
       extraDirs: opts.config.skillsDirs,
       maxBodyChars: opts.config.skillsMaxBodyChars,
     });
-    const rt = new AgentRuntime(opts, skills);
+    const memory = opts.config.memoryEnabled
+      ? await LessonStore.open(opts.config.stateDir)
+      : null;
+    const rt = new AgentRuntime(opts, skills, memory);
     await rt.refreshContext();
     return rt;
   }
@@ -88,6 +102,8 @@ export class AgentRuntime {
       permissionMode: this.config.permissionMode,
       skillsIndex: this.skills.enabled ? this.skills.renderIndex() : '',
       skillsAutoRoute: this.config.skillsAutoRoute,
+      memoryEnabled: Boolean(this.memory),
+      memoryCount: this.memory?.count ?? 0,
     });
     const head: Message = { role: 'system', content: this.systemPrompt };
     this.messages = [head, ...this.messages.filter((m) => m.role !== 'system')];
@@ -149,6 +165,7 @@ export class AgentRuntime {
       `messages ${this.messages.length}`,
       `steps ${this.session.stepsUsed}`,
       this.skills.loadedNames().length > 0 ? `skills ${this.skills.loadedNames().join('+')}` : '',
+      this.memory && this.memory.count > 0 ? `memory ${this.memory.count}` : '',
       `in ${formatTokens(t.promptTokens)} / out ${formatTokens(t.completionTokens)} tok`,
       `llm ${(t.llmMs / 1000).toFixed(1)}s · tools ${(t.toolMs / 1000).toFixed(1)}s`,
     ]
@@ -201,7 +218,8 @@ export class AgentRuntime {
     return true;
   }
 
-  send(text: string, signal: AbortSignal): Promise<TurnResult> {
+  /** `signal` is optional: a programmatic caller should not need an AbortController. */
+  send(text: string, signal: AbortSignal = new AbortController().signal): Promise<TurnResult> {
     if (this.messages.length === 0 || this.messages[0]?.role !== 'system') {
       this.messages.unshift({ role: 'system', content: this.systemPrompt });
     }
@@ -210,6 +228,19 @@ export class AgentRuntime {
     if (auto) {
       this.messages.push({ role: 'user', content: auto.note });
       this.ui.note(`skill auto-loaded: ${auto.skill}`);
+      this.ui.emitSkill?.(auto.skill);
+    }
+
+    // Recall anything relevant learned in previous sessions. This is what makes
+    // the agent better on day two than day one, without touching model weights.
+    this.lastInjectedLessons = [];
+    if (this.memory && this.memory.count > 0) {
+      const recalled = this.memory.renderBlockWithIds(text, this.config.memoryMaxInject);
+      if (recalled.text) {
+        this.messages.push({ role: 'user', content: recalled.text });
+        this.lastInjectedLessons = recalled.ids;
+        this.ui.note(`recalled ${recalled.ids.length} remembered fact${recalled.ids.length === 1 ? '' : 's'}`);
+      }
     }
 
     return runTurn(this.messages, text, {
@@ -221,6 +252,7 @@ export class AgentRuntime {
       session: this.session,
       systemPrompt: this.systemPrompt,
       skills: this.skills,
+      memory: this.memory,
     }, signal);
   }
 }

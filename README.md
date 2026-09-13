@@ -79,6 +79,7 @@ Switch models any time: `lca -m qwen3:8b` or `/model qwen3:8b` inside the REPL.
 lca                                  # interactive REPL in the current folder
 lca run "add input validation to src/signup.ts"   # one-shot task
 lca run --readonly "explain what this repo does"  # analysis only, cannot change anything
+lca serve                            # the same agent in your browser + an HTTP API
 lca doctor                           # environment health check
 lca models                           # what's pulled locally
 ```
@@ -93,6 +94,9 @@ Inside the REPL:
 | `/model qwen3:8b`   | switch model mid-session                             |
 | `/permissions auto` | stop asking for approval (`ask` \| `auto` \| `readonly`) |
 | `/stats`            | tokens, steps, timings                               |
+| `/memory`           | list what the agent remembers about this project     |
+| `/remember <text>`  | save a fact for future sessions                      |
+| `/forget <id>`      | delete one remembered fact                           |
 | `/compact`          | shrink history to free up context                    |
 | `/undo` `/clear`    | roll back / reset the conversation                   |
 | `Ctrl+C`            | interrupt the current turn                           |
@@ -184,6 +188,110 @@ fetched only if it is actually needed.
 
 ---
 
+## Web UI
+
+Prefer a browser to a terminal? `lca serve` puts the *same* agent behind a local web page.
+
+```bash
+lca serve                     # opens http://127.0.0.1:8787
+lca serve --port 3000         # different port
+lca serve --host 0.0.0.0      # reachable from other devices — a token is minted automatically
+lca serve --provider mock     # no Ollama? a scripted tour of the whole UI
+```
+
+What you get in the browser:
+
+- streaming answers with lightweight markdown rendering
+- collapsible **tool cards** — name, summary, duration, and the raw output/diff behind a click
+- the **permission dialog** (Allow once / Always allow / Deny) — an unanswered prompt *denies* itself
+- live **plan**, **skills** and **memory** panels; click a skill to load it, edit memory in place
+- 👍 / 👎 feedback on each answer, which votes on the memories that were recalled for that turn
+- model switcher, permission-mode switcher, stats line, Stop, Undo, Clear
+
+Several tabs share **one** agent. Refresh the page and the conversation is restored from a snapshot.
+
+It is plain HTML + CSS + JS — no React, no bundler, no build step. The server is `node:http` and the
+stream is Server-Sent Events. Zero dependencies, like the rest of this repo.
+
+### Is it safe to expose?
+
+The web UI can do everything the terminal agent can, so it inherits the same gates — plus one more:
+
+| Situation | What happens |
+| --------- | ------------ |
+| `lca serve` (default) | Binds `127.0.0.1`. Only your machine can reach it. No token needed. |
+| `--host 0.0.0.0`, no `--token` | A random token is **generated** and printed. Every `/api/*` call needs it; the URL carries it once and the UI stores it in `localStorage`. |
+| `--host 0.0.0.0 --public` | No token. Only do this on a network you trust — anyone on it can run your shell commands. |
+| Nobody answers a permission prompt | After 5 minutes it is **denied**. An unattended web agent never falls open. |
+| Permission mode | Still `ask` by default. `readonly` makes the browser agent harmless. |
+
+Static files are jailed inside the web folder, and every string the model or a tool produces is HTML
+-escaped before it reaches the DOM.
+
+### The HTTP API
+
+Anything the browser does, a script can do. Same port, JSON in, JSON out, SSE for the stream.
+
+| Endpoint | What it does |
+| -------- | ------------ |
+| `GET /api/events` | SSE stream of every event (`assistant_delta`, `tool_start`, `permission_request`, `turn_end`, …) |
+| `GET /api/state` | Full snapshot: model, workspace, plan, skills, memory, history, tools |
+| `POST /api/chat` `{text, skill?, queue?}` | Send a message. Returns `202` immediately; the work streams over SSE |
+| `POST /api/permission` `{id, answer}` | Answer a prompt: `yes` \| `no` \| `always` |
+| `POST /api/interrupt` | Abort the current turn |
+| `POST /api/model` `{model}` · `POST /api/permissions` `{mode}` | Switch model / permission mode |
+| `POST /api/skill` `{name}` | Load a skill into context |
+| `GET/POST/DELETE /api/memory` · `POST /api/memory/vote` | Read, add, forget and vote on memories |
+| `POST /api/feedback` `{verdict, note?}` | 👍 boosts recalled memories; 👎 sinks them and can save a correction |
+| `POST /api/clear` · `POST /api/undo` · `POST /api/compact` | Conversation controls |
+| `GET /api/health` | Provider, model, reachable Ollama models, busy state |
+
+```bash
+# drive the agent from a shell script
+curl -s localhost:8787/api/chat -H 'Content-Type: application/json' \
+     -d '{"text":"summarise what this repo does"}'
+curl -N -s localhost:8787/api/events      # watch it work
+```
+
+---
+
+## Memory — how it gets better with use
+
+This is **not** training. Nothing fine-tunes the model; its weights never change, and a 7B model on
+your laptop cannot be fine-tuned in any useful way. What actually makes a local agent improve with
+use is simpler and it works today: **write down what you correct it on, and read it back later.**
+
+Memories live in `.agent/memory/lessons.jsonl` — plain JSON Lines you can read, grep or edit:
+
+```json
+{"id":"l_mu0b5p6v_kjwc","text":"Use pnpm in this repo, never npm","tags":["tooling"],"score":2,"source":"user"}
+```
+
+How it behaves:
+
+- **Recall is keyword-based, not embeddings.** On each turn the store ranks memories by token overlap
+  with your message (tags and file paths weigh more), and injects the top few as a bracketed note.
+  It is free, instant and offline — the right trade for a few hundred memories.
+- **The agent can save its own memories** with the `remember` tool: a convention it discovered, a
+  command that works, a gotcha it hit.
+- **You can save them from the UI** (Memory panel) or from the REPL.
+- **Votes make memories float or sink.** 👍 raises the score so a memory is recalled more often; 👎
+  lowers it, and at −2 it stops being recalled at all (but stays in the file until you delete it).
+- **Duplicates collapse.** Saving the same fact twice bumps the score instead of repeating itself —
+  which is also how a memory earns trust.
+
+Turn off with `LCA_MEMORY=false`; cap how many are injected with `LCA_MEMORY_MAX_INJECT` (default 5).
+
+```bash
+lca run "remember: this repo uses vitest, not jest"
+cat .agent/memory/lessons.jsonl
+```
+
+The honest version of "one day it will be as good as Claude" is this: the model will not get smarter,
+but *your setup* will. Memory plus `AGENTS.md` plus skills is where the compounding comes from.
+
+---
+
 ## Project rules
 
 Drop an `AGENTS.md` in your repo root and it is injected into the system prompt — same trick as
@@ -202,8 +310,10 @@ Drop an `AGENTS.md` in your repo root and it is injected into the system prompt 
 
 ```bash
 npm run dev          # run from source with tsx
-npm run typecheck    # strict TS, no emit
-npm test             # 152 tests, no model required
+npm run serve        # the web UI + HTTP API on 127.0.0.1:8787
+npm run serve:demo   # the web UI against the scripted mock provider (no Ollama needed)
+npm run typecheck    # strict TS, no emit — src AND tests
+npm test             # 200 tests, no model required
 npm run build        # compile to dist/
 npm link             # install the `lca` command globally
 ```
@@ -226,6 +336,15 @@ LCA_TEMPERATURE=0.1
 LCA_MAX_STEPS=25
 LCA_PERMISSION_MODE=ask
 LCA_WORKSPACE=/path/to/repo
+
+# memory
+LCA_MEMORY=true
+LCA_MEMORY_MAX_INJECT=5
+
+# web UI (`lca serve`)
+LCA_WEB_HOST=127.0.0.1
+LCA_WEB_PORT=8787
+LCA_WEB_TOKEN=             # set one to require it on every /api call
 ```
 
 See [`.env.example`](./.env.example).
@@ -240,6 +359,8 @@ This is a real, working agent — but a local 7B model is not Claude. Expect:
 - **Dropped or malformed tool calls.** The repair layer catches most, not all.
 - **Slow first token.** The model loads into RAM once per session (`keepAlive` is 20m by default).
 - **Small context.** 8k tokens is ~2,500 lines. Compaction helps but cannot replace RAM.
+- **Memory is recall, not learning.** It retrieves what you told it; it does not change how the model
+      reasons. Wrong memories produce confidently wrong behaviour — review the file now and then.
 
 The roadmap in [`GUIDE.md`](./GUIDE.md#8-roadmap-closing-the-gap-with-claude-code) covers what to
 build next.

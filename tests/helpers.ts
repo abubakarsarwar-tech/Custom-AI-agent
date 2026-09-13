@@ -7,6 +7,7 @@ import { MockProvider, type MockTurn } from '../src/llm/mock.js';
 import { UI } from '../src/ui/ui.js';
 import type { ToolContext } from '../src/tools/types.js';
 import { PermissionGate } from '../src/safety/permissions.js';
+import { LessonStore } from '../src/memory/lessons.js';
 import { newSession } from '../src/util/session.js';
 
 export interface Sandbox {
@@ -68,6 +69,7 @@ export async function makeContext(
   const session = newSession(cfg);
   const ui = silentUI();
   const permissions = new PermissionGate(cfg.permissionMode, session, ui);
+  const memory = cfg.memoryEnabled ? await LessonStore.open(cfg.stateDir) : null;
   return {
     ctx: {
       workspace: cfg.workspace,
@@ -77,6 +79,7 @@ export async function makeContext(
       ui,
       signal: new AbortController().signal,
       skills: null,
+      memory,
     },
     cleanup: async () => {},
   };

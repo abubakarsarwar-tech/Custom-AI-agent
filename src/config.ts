@@ -43,8 +43,20 @@ export interface AgentConfig {
   skillsDirs: string[];
   /** Cap on how much of one skill body may enter the context. */
   skillsMaxBodyChars: number;
+  /** Remember corrections and conventions across sessions (.agent/memory/lessons.jsonl). */
+  memoryEnabled: boolean;
+  /** Max remembered facts injected into a single turn. */
+  memoryMaxInject: number;
   /** Where conversation history + logs are persisted. */
   stateDir: string;
+  /** `lca serve`: interface to bind. 127.0.0.1 keeps the web UI private to this machine. */
+  serveHost: string;
+  /** `lca serve`: port for the web UI + HTTP API. */
+  servePort: number;
+  /** Shared secret for /api/*. Empty = no auth (only safe on loopback). */
+  serveToken: string;
+  /** Folder of static files to serve. Empty = the bundled web/ directory. */
+  webDir: string;
 }
 
 export const DEFAULT_CONFIG: AgentConfig = {
@@ -67,6 +79,12 @@ export const DEFAULT_CONFIG: AgentConfig = {
   skillsAutoRoute: true,
   skillsDirs: [],
   skillsMaxBodyChars: 12000,
+  memoryEnabled: true,
+  memoryMaxInject: 5,
+  serveHost: '127.0.0.1',
+  servePort: 8787,
+  serveToken: '',
+  webDir: '',
 };
 
 const ENV_MAP: Record<string, keyof AgentConfig> = {
@@ -84,6 +102,12 @@ const ENV_MAP: Record<string, keyof AgentConfig> = {
   LCA_SKILLS_AUTO: 'skillsAutoRoute',
   LCA_SKILLS_DIRS: 'skillsDirs',
   LCA_SKILLS_MAX_BODY: 'skillsMaxBodyChars',
+  LCA_MEMORY: 'memoryEnabled',
+  LCA_MEMORY_MAX_INJECT: 'memoryMaxInject',
+  LCA_WEB_HOST: 'serveHost',
+  LCA_WEB_PORT: 'servePort',
+  LCA_WEB_TOKEN: 'serveToken',
+  LCA_WEB_DIR: 'webDir',
 };
 
 const NUMERIC: Array<keyof AgentConfig> = [
@@ -94,10 +118,12 @@ const NUMERIC: Array<keyof AgentConfig> = [
   'maxOutputChars',
   'bashTimeoutMs',
   'skillsMaxBodyChars',
+  'memoryMaxInject',
+  'servePort',
 ];
 
 const ARRAYS: Array<keyof AgentConfig> = ['autoApprove', 'skillsDirs'];
-const BOOLEANS: Array<keyof AgentConfig> = ['skillsEnabled', 'skillsAutoRoute'];
+const BOOLEANS: Array<keyof AgentConfig> = ['skillsEnabled', 'skillsAutoRoute', 'memoryEnabled'];
 
 function coerce(key: keyof AgentConfig, raw: string): unknown {
   if (NUMERIC.includes(key)) {
@@ -189,5 +215,8 @@ export function redact(cfg: AgentConfig): Record<string, unknown> {
     workspace: cfg.workspace,
     maxSteps: cfg.maxSteps,
     permissionMode: cfg.permissionMode,
+    serveHost: cfg.serveHost,
+    servePort: cfg.servePort,
+    serveToken: cfg.serveToken ? 'set' : 'none',
   };
 }

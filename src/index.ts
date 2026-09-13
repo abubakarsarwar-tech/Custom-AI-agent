@@ -7,29 +7,36 @@ import { helpText, parseArgs } from './cli/args.js';
 import { startRepl } from './cli/repl.js';
 import { attachStandaloneAsk } from './cli/prompt.js';
 import { AgentRuntime } from './agent/runtime.js';
-import { MockProvider, demoScript, sloppyScript } from './llm/mock.js';
+import { MockProvider, demoScript, sloppyScript, webScript } from './llm/mock.js';
 import { OllamaProvider, pingOllama } from './llm/ollama.js';
 import { UI } from './ui/ui.js';
 import { SkillLibrary } from './skills/library.js';
 import { c } from './util/ansi.js';
 import { runDoctor } from './doctor.js';
+import { BUNDLED_WEB_DIR, generateToken, startServer } from './server/http.js';
+
+type MockScript = 'demo' | 'sloppy' | 'web';
+
+function mockProvider(script: MockScript = 'demo'): MockProvider {
+  if (script === 'sloppy') return new MockProvider(sloppyScript());
+  // The web tour loops and paces itself so the browser demo stays usable.
+  if (script === 'web') return new MockProvider(webScript(), { loop: true, delayMs: 6 });
+  return new MockProvider(demoScript());
+}
 
 async function buildRuntime(
   cfg: AgentConfig,
   ui: UI,
-  mockScript?: 'demo' | 'sloppy',
+  mockScript?: MockScript,
 ): Promise<AgentRuntime> {
-  const provider =
-    cfg.provider === 'mock'
-      ? new MockProvider(mockScript === 'sloppy' ? sloppyScript() : demoScript())
-      : OllamaProvider.fromConfig(cfg);
+  const script: MockScript = mockScript ?? 'demo';
+  const provider = cfg.provider === 'mock' ? mockProvider(script) : OllamaProvider.fromConfig(cfg);
 
   return AgentRuntime.create({
     ui,
     config: cfg,
     provider,
-    factory: (c) =>
-      c.provider === 'mock' ? new MockProvider(demoScript()) : OllamaProvider.fromConfig(c),
+    factory: (c) => (c.provider === 'mock' ? mockProvider(script) : OllamaProvider.fromConfig(c)),
   });
 }
 
@@ -209,6 +216,80 @@ async function main(argv: string[]): Promise<number> {
         return 1;
       }
       return result.aborted ? 130 : 0;
+    }
+
+    case 'serve': {
+      const loopback = ['127.0.0.1', 'localhost', '::1'].includes(cfg.serveHost);
+      // A web agent can run shell commands. Binding off-loopback with no secret
+      // would hand that to the whole network, so we mint one instead.
+      const token = cfg.serveToken || (loopback || args.publicNoAuth ? '' : generateToken());
+      const webDir = cfg.webDir ? path.resolve(cfg.webDir) : BUNDLED_WEB_DIR;
+
+      if (cfg.provider === 'ollama') {
+        const ping = await pingOllama(cfg.ollamaUrl);
+        if (!ping.ok) {
+          ui.warn(`Ollama is not reachable at ${cfg.ollamaUrl} (${ping.error})`);
+          ui.dim('the web UI will still open and say so — start Ollama, then refresh. Or run: lca doctor');
+        } else if (!(ping.models ?? []).some((m) => m === cfg.model || m.startsWith(`${cfg.model.split(':')[0]}:`))) {
+          ui.warn(`model "${cfg.model}" is not pulled yet — pick another in the web UI`);
+          ui.dim(`fix: ollama pull ${cfg.model}`);
+        }
+      }
+
+      // No Ollama in this shell? The scripted web tour still exercises the whole UI.
+      const rt = await buildRuntime(
+        cfg,
+        ui,
+        args.mockScript ?? (cfg.provider === 'mock' ? 'web' : undefined),
+      );
+      if (args.skill && rt.preloadSkill(args.skill)) ui.success(`skill loaded: ${args.skill}`);
+
+      let started: Awaited<ReturnType<typeof startServer>>;
+      try {
+        started = await startServer(rt, {
+          host: cfg.serveHost,
+          port: cfg.servePort,
+          webDir,
+          ...(token ? { token } : {}),
+        });
+      } catch (err) {
+        const code = (err as NodeJS.ErrnoException)?.code;
+        if (code === 'EADDRINUSE') {
+          ui.error(`port ${cfg.servePort} is already in use`);
+          ui.dim(`fix: lca serve --port ${cfg.servePort + 1}`);
+          return 1;
+        }
+        throw err;
+      }
+
+      const openUrl = token ? `${started.url}?token=${token}` : started.url;
+      ui.line('');
+      ui.banner('LCA web UI', [
+        `  ${c.bold(openUrl)}`,
+        '',
+        `  workspace   ${cfg.workspace}`,
+        `  model       ${cfg.model} (${cfg.provider})`,
+        `  permissions ${cfg.permissionMode}`,
+        `  web files   ${webDir}`,
+        ...(token ? [`  token       ${token}`] : []),
+        '',
+        '  The HTTP API is on the same port: GET /api/state, POST /api/chat,',
+        '  GET /api/events (SSE). Press Ctrl+C to stop.',
+      ]);
+      ui.line('');
+      if (token) ui.dim(`open the URL above as-is — it carries the token. The UI stores it in localStorage.`);
+
+      // Keep the process alive and shut down cleanly.
+      await new Promise<void>((resolve) => {
+        const stop = (sig: string): void => {
+          ui.line('');
+          ui.dim(`${sig} — shutting down`);
+          void started.close().then(resolve, resolve);
+        };
+        process.once('SIGINT', () => stop('SIGINT'));
+        process.once('SIGTERM', () => stop('SIGTERM'));
+      });
+      return 0;
     }
 
     case 'repl':
