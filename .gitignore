@@ -1,0 +1,12 @@
+node_modules/
+dist/
+coverage/
+*.log
+.env
+.DS_Store
+.agent/history.jsonl
+.agent/cache/
+tmp/
+
+# machine-local rollback state — never commit this
+.agent/checkpoints/

@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>LCA — Local Code Agent</title>
+<link rel="stylesheet" href="./styles.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🤖</text></svg>">
+</head>
+<body>
+<div class="app">
+
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true">&gt;_</span>
+      <span>LCA <small>local code agent</small></span>
+    </div>
+
+    <span class="pill" id="pill-model" title="Active model"><span class="dot"></span><span id="model-name">—</span></span>
+    <span class="pill" id="pill-state" data-state="down" title="Connection to the agent server">
+      <span class="dot"></span><span id="state-text">connecting…</span>
+    </span>
+
+    <div class="topbar-spacer"></div>
+
+    <button class="btn" id="btn-panel" type="button" aria-expanded="false" aria-controls="sidebar" hidden>Panel</button>
+    <button class="btn" id="btn-clear" type="button" title="Wipe conversation history">Clear</button>
+    <button class="btn" id="btn-undo" type="button" title="Remove your last message">Undo</button>
+  </header>
+
+  <div class="banner" id="banner" role="status">
+    <strong>Heads up:</strong>
+    <span id="banner-text"></span>
+  </div>
+
+  <aside class="sidebar" id="sidebar" aria-label="Agent controls">
+
+    <section aria-labelledby="h-plan">
+      <h2 class="panel-title" id="h-plan">Plan <span class="count" id="plan-count"></span></h2>
+      <ul class="plan-list" id="plan-list"></ul>
+      <p class="empty-note" id="plan-empty">No plan yet. The agent creates one for multi-step tasks.</p>
+    </section>
+
+    <section aria-labelledby="h-checkpoints">
+      <h2 class="panel-title" id="h-checkpoints">Checkpoints <span class="count" id="cp-count"></span></h2>
+      <button class="btn cp-rollback" id="cp-restore-last" type="button" disabled>
+        ↩ Roll back the last change
+      </button>
+      <div class="cp-list" id="cp-list"></div>
+      <p class="empty-note" id="cp-empty">
+        No file changes yet. Any turn that edits a file gets a rollback point here.
+      </p>
+      <p class="empty-note">Covers <code>write_file</code> and <code>edit_file</code>. Rolling back is
+        itself reversible.</p>
+    </section>
+
+    <section aria-labelledby="h-skills">
+      <h2 class="panel-title" id="h-skills">Skills <span class="count" id="skills-count"></span></h2>
+      <div class="skill-list" id="skill-list" role="group" aria-label="Load a skill"></div>
+      <p class="empty-note">Click to load one into context. Matching skills load automatically.</p>
+    </section>
+
+    <section aria-labelledby="h-memory">
+      <h2 class="panel-title" id="h-memory">Memory <span class="count" id="memory-count"></span></h2>
+      <ul class="memory-list" id="memory-list"></ul>
+      <p class="empty-note" id="memory-empty">Nothing remembered yet.</p>
+      <form class="add-memory" id="memory-form">
+        <label class="visually-hidden" for="memory-input" style="position:absolute;left:-9999px">Remember a fact about this project</label>
+        <input class="text-input" id="memory-input" type="text"
+               placeholder="Remember: use pnpm, never npm" autocomplete="off" maxlength="500">
+        <button class="btn btn-primary" type="submit" aria-label="Save memory">+</button>
+      </form>
+      <p class="empty-note">Facts here are recalled automatically in later sessions.</p>
+    </section>
+
+  </aside>
+
+  <main class="main">
+    <div class="transcript" id="transcript" role="log" aria-live="polite" aria-label="Conversation">
+      <p class="empty-note" id="welcome">
+        Ask the agent to do something in <code id="welcome-ws">this folder</code>. Everything runs locally —
+        the model, the tools, and your code. Nothing is sent anywhere.
+      </p>
+    </div>
+
+    <form class="composer" id="composer">
+      <div class="composer-inner">
+        <div class="composer-box">
+          <label for="input" style="position:absolute;left:-9999px">Message the agent</label>
+          <textarea id="input" rows="1" placeholder="Describe a task…  (Enter to send, Shift+Enter for a new line)"
+                    autocomplete="off" spellcheck="false"></textarea>
+          <button class="btn btn-primary" id="btn-send" type="submit">Send</button>
+          <button class="btn btn-danger" id="btn-stop" type="button" disabled>Stop</button>
+        </div>
+
+        <div class="composer-meta">
+          <span id="meta-stats">idle</span>
+          <span class="topbar-spacer"></span>
+          <label for="sel-mode">Permissions</label>
+          <select id="sel-mode" title="What the agent may do without asking">
+            <option value="ask">ask (confirm writes &amp; shell)</option>
+            <option value="auto">auto (never ask)</option>
+            <option value="readonly">readonly (no changes)</option>
+          </select>
+          <label for="sel-model">Model</label>
+          <select id="sel-model" title="Switch the local model"></select>
+        </div>
+      </div>
+    </form>
+  </main>
+</div>
+
+<div class="overlay" id="overlay" data-open="false">
+  <div class="dialog" role="alertdialog" aria-modal="true" aria-labelledby="perm-title" aria-describedby="perm-detail">
+    <h2 id="perm-title">The agent needs permission</h2>
+    <span class="risk" id="perm-risk" data-risk="medium">MEDIUM</span>
+    <p id="perm-detail"></p>
+    <pre id="perm-command"></pre>
+    <div class="dialog-actions">
+      <button class="btn" id="perm-no" type="button">Deny</button>
+      <button class="btn" id="perm-always" type="button" title="Allow this tool for the rest of the session">Always allow</button>
+      <button class="btn btn-primary" id="perm-yes" type="button">Allow once</button>
+    </div>
+  </div>
+</div>
+
+<div class="overlay" id="token-overlay" data-open="false">
+  <div class="dialog" role="dialog" aria-modal="true" aria-labelledby="token-title" aria-describedby="token-help">
+    <h2 id="token-title">This agent is token-protected</h2>
+    <p id="token-help">
+      <code>lca serve</code> printed a URL like <code>http://127.0.0.1:8787/?token=Ab12…</code>.
+      Paste that token (or the whole URL) to connect.
+    </p>
+    <input class="text-input" id="token-input" type="text" placeholder="token or full URL"
+           autocomplete="off" spellcheck="false" style="width:100%;margin-bottom:var(--s4)">
+    <div class="dialog-actions">
+      <button class="btn btn-primary" id="token-save" type="button">Connect</button>
+    </div>
+  </div>
+</div>
+
+<script src="./app.js" type="module"></script>
+</body>
+</html>
