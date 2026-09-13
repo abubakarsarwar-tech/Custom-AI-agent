@@ -294,6 +294,64 @@ Worth knowing:
 
 ---
 
+## Sub-agents — a second context window
+
+A local model has a small window (8k-32k tokens is realistic). The most common way an agent dies on a
+real repo is not stupidity, it is **context exhaustion**: it reads twenty files, fills the window, and
+starts forgetting the beginning of your request.
+
+`task` fixes that by delegation. The agent can hand a self-contained job to a **sub-agent** that gets
+its own fresh context window, does the reading there, and returns only a short report:
+
+```
+you  > where is the session token validated?
+lca  > ⚒ task explore: find every place the session token is validated…
+       │ ⚒ grep  "token" …
+       │ ⚒ read_file  src/server/auth.ts
+       │ ✔ 3 files checked
+       ✔ task · 6 steps · 4 tool calls · 2.1s
+       ● Validated in three places: src/server/auth.ts:41 (HMAC), …
+```
+
+The three file reads stayed in the sub-agent's window. The parent only paid for the report — measured
+in the tests, a delegation that reads two 4,000-char files adds under 800 tokens to the parent instead
+of ~2,300.
+
+**Two modes:**
+
+| kind | can do | use it for |
+| --- | --- | --- |
+| `explore` (default) | read-only, always | searching, reading many files, answering a question |
+| `work` | edit files, inheriting your permission mode | a mechanical change the agent has already decided on |
+
+`explore` is read-only even if you are running in `auto` mode — a delegated job cannot quietly rewrite
+your repo. `work` goes through the same permission gate as everything else, and every prompt is
+labelled `[sub-agent]` so you always know who is asking.
+
+**The rules that keep this honest:**
+
+- **No nesting.** A sub-agent cannot spawn a sub-agent (it is never offered the `task` tool), so there
+  is no recursion and no surprise fan-out.
+- **One undo boundary.** A `work` sub-agent shares the parent turn's checkpoint, so `/restore` undoes
+  its writes along with the parent's. Nothing escapes rollback.
+- **Shared approvals.** "Always allow" answers apply to sub-agents too — you are never asked twice for
+  the same thing.
+- **The report is capped** (`LCA_SUBAGENT_REPORT_CHARS`, default 4,000) and the step count is capped
+  (`LCA_SUBAGENT_MAX_STEPS`, default 12). If either limit is hit, the report says so instead of
+  pretending to be complete.
+- **Token spend is reported honestly** — the sub-agent's tokens are folded into the turn's `/stats`.
+- **Stop means stop.** Ctrl-C (or the browser's Stop) aborts the sub-agent too, and the report is
+  marked `ABORTED`.
+
+Turn it off with `LCA_SUBAGENTS=false`; the tool then disappears from the model's tool list and the
+prompt stops mentioning it, so you pay nothing for it.
+
+> Note: sub-agents are about **context isolation, not speed**. A laptop runs one local model at a time,
+> so they run sequentially. Delegating a job costs one extra model round-trip; it pays for itself when
+> the alternative is filling your window with files you will never look at again.
+
+---
+
 ## Memory — how it gets better with use
 
 This is **not** training. Nothing fine-tunes the model; its weights never change, and a 7B model on
@@ -352,7 +410,7 @@ npm run dev          # run from source with tsx
 npm run serve        # the web UI + HTTP API on 127.0.0.1:8787
 npm run serve:demo   # the web UI against the scripted mock provider (no Ollama needed)
 npm run typecheck    # strict TS, no emit — src AND tests
-npm test             # 231 tests, no model required
+npm test             # 248 tests, no model required
 npm run build        # compile to dist/
 npm link             # install the `lca` command globally
 ```
@@ -383,6 +441,11 @@ LCA_MEMORY_MAX_INJECT=5
 # checkpoints (rollback for the agent's file changes)
 LCA_CHECKPOINTS=true
 LCA_CHECKPOINTS_KEEP=20
+
+# sub-agents (delegate a job to a fresh context window)
+LCA_SUBAGENTS=true
+LCA_SUBAGENT_MAX_STEPS=12
+LCA_SUBAGENT_REPORT_CHARS=4000
 
 # web UI (`lca serve`)
 LCA_WEB_HOST=127.0.0.1

@@ -553,6 +553,97 @@ button, input, textarea, select {
 .tool-body .add { color: var(--success); }
 .tool-body .del { color: var(--danger); }
 
+/* ---------------- sub-agent ---------------- */
+
+.subagent {
+  max-width: 900px;
+  width: 100%;
+  margin: 0 auto;
+  border: 1px solid var(--border);
+  border-left: 2px solid var(--accent);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  overflow: hidden;
+}
+
+.subagent-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s2);
+  width: 100%;
+  padding: var(--s2) var(--s3);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  font-size: 12.5px;
+}
+
+.subagent-head:hover { background: var(--surface-2); }
+
+.subagent-mark { flex: none; color: var(--accent); font-size: 13px; }
+.subagent[data-state="error"] .subagent-mark { color: var(--danger); }
+.subagent[data-state="running"] .subagent-mark { animation: pulse 1.1s ease-in-out infinite; }
+
+.subagent-kind {
+  flex: none;
+  font-family: var(--mono);
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  padding: 1px 7px;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.subagent-prompt {
+  flex: 1;
+  min-width: 0;
+  color: var(--text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.subagent-meta { flex: none; font-family: var(--mono); font-size: 11px; color: var(--text-dim); }
+
+.subagent-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s2);
+  padding: var(--s2) var(--s3) var(--s3);
+  border-top: 1px solid var(--border-soft);
+  background: var(--bg);
+}
+
+.subagent[data-open="false"] .subagent-body { display: none; }
+
+/* everything inside a sub-agent is a little quieter and narrower */
+.subagent-body .tools,
+.subagent-body .msg,
+.subagent-body .note-line,
+.subagent-body .thinking {
+  max-width: 100%;
+  margin: 0;
+}
+
+.subagent-body .msg-head { font-size: 10px; }
+.subagent-body .tool { background: var(--surface); }
+
+.subagent-report {
+  padding: var(--s2) var(--s3);
+  border-top: 1px solid var(--border-soft);
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--text-muted);
+  max-height: 260px;
+  overflow: auto;
+}
+
 /* system notes */
 .note-line {
   max-width: 900px;

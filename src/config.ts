@@ -49,6 +49,12 @@ export interface AgentConfig {
   memoryMaxInject: number;
   /** Snapshot files before the agent changes them, so a turn can be rolled back. */
   checkpointsEnabled: boolean;
+  /** Let the agent delegate to a sub-agent that gets its own context window. */
+  subagentsEnabled: boolean;
+  /** Step cap for one sub-agent. Always clamped to maxSteps as well. */
+  subagentMaxSteps: number;
+  /** Hard cap on the report that comes back into the parent's context. */
+  subagentReportChars: number;
   /** How many turn-checkpoints to keep before pruning the oldest. */
   checkpointsKeep: number;
   /** Where conversation history + logs are persisted. */
@@ -87,6 +93,9 @@ export const DEFAULT_CONFIG: AgentConfig = {
   memoryMaxInject: 5,
   checkpointsEnabled: true,
   checkpointsKeep: 20,
+  subagentsEnabled: true,
+  subagentMaxSteps: 12,
+  subagentReportChars: 4000,
   serveHost: '127.0.0.1',
   servePort: 8787,
   serveToken: '',
@@ -112,6 +121,9 @@ const ENV_MAP: Record<string, keyof AgentConfig> = {
   LCA_MEMORY_MAX_INJECT: 'memoryMaxInject',
   LCA_CHECKPOINTS: 'checkpointsEnabled',
   LCA_CHECKPOINTS_KEEP: 'checkpointsKeep',
+  LCA_SUBAGENTS: 'subagentsEnabled',
+  LCA_SUBAGENT_MAX_STEPS: 'subagentMaxSteps',
+  LCA_SUBAGENT_REPORT_CHARS: 'subagentReportChars',
   LCA_WEB_HOST: 'serveHost',
   LCA_WEB_PORT: 'servePort',
   LCA_WEB_TOKEN: 'serveToken',
@@ -128,6 +140,8 @@ const NUMERIC: Array<keyof AgentConfig> = [
   'skillsMaxBodyChars',
   'memoryMaxInject',
   'checkpointsKeep',
+  'subagentMaxSteps',
+  'subagentReportChars',
   'servePort',
 ];
 
@@ -137,6 +151,7 @@ const BOOLEANS: Array<keyof AgentConfig> = [
   'skillsAutoRoute',
   'memoryEnabled',
   'checkpointsEnabled',
+  'subagentsEnabled',
 ];
 
 function coerce(key: keyof AgentConfig, raw: string): unknown {
@@ -233,5 +248,6 @@ export function redact(cfg: AgentConfig): Record<string, unknown> {
     servePort: cfg.servePort,
     serveToken: cfg.serveToken ? 'set' : 'none',
     checkpoints: cfg.checkpointsEnabled ? `on (keep ${cfg.checkpointsKeep})` : 'off',
+    subagents: cfg.subagentsEnabled ? `on (max ${cfg.subagentMaxSteps} steps)` : 'off',
   };
 }

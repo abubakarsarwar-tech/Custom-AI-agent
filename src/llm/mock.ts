@@ -163,7 +163,32 @@ export function webScript(): MockTurn[] {
       ],
     },
     {
-      text: 'Now I will create the file. In "ask" mode this pops an approval in your browser.',
+      text: 'The workspace is empty. Rather than spend my own context surveying it, I will delegate that to a sub-agent.',
+      toolCalls: [
+        {
+          name: 'task',
+          arguments: {
+            prompt:
+              'Survey this workspace. Report exactly what is here (files, directories, any existing code) ' +
+              'and say whether anything must be created before a demo file can be written.',
+            kind: 'explore',
+          },
+        },
+      ],
+    },
+    // --- the two turns below belong to the SUB-AGENT, which has its own context window ---
+    {
+      text: '',
+      toolCalls: [{ name: 'list_dir', arguments: { path: '.' } }],
+    },
+    {
+      text: `Survey complete.
+
+The workspace is empty: no source files, no README, no build config. The only thing present is the agent's own bookkeeping directory. There is no existing convention to follow, so a demo file has to be created from scratch.`,
+    },
+    // --- back to the parent, which only ever saw that report ---
+    {
+      text: 'The sub-agent confirms the workspace is empty. Now I will create the file — in "ask" mode this pops an approval in your browser.',
       toolCalls: [
         {
           name: 'write_file',
@@ -207,20 +232,21 @@ export function webScript(): MockTurn[] {
       text: `Done. Here is what happened:
 
 **1. Planned** the work in the panel on the left, then kept it updated as I went.
-**2. Wrote** \`demo-from-browser.txt\` — you approved it in the permission dialog.
-**3. Verified** by reading the file back from disk:
+**2. Delegated** the workspace survey to a sub-agent with its own context window — that is the nested card above. Only its report came back; its file reads did not.
+**3. Wrote** \`demo-from-browser.txt\` — you approved it in the permission dialog.
+**4. Verified** by reading the file back from disk:
 
 \`\`\`
 written by LCA through the web UI
 100% local, zero cloud calls
 \`\`\`
 
-**4. Remembered** a fact about this project, so a later session starts out smarter.
+**5. Remembered** a fact about this project, so a later session starts out smarter.
 
 Every step ran on your machine. Nothing was sent anywhere.
 
 - Try the 👍 / 👎 buttons under this message — they vote on what was recalled.
-- Click a tool card above to see its raw output.
+- Click a tool card above to see its raw output, or click the sub-agent header to reopen its workings.
 - Press **Stop** mid-turn to interrupt, or switch to *readonly* mode below.`,
     },
   ];

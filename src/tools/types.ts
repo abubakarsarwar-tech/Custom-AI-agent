@@ -6,6 +6,7 @@ import type { UI } from '../ui/ui.js';
 import type { SkillLibrary } from '../skills/library.js';
 import type { LessonStore } from '../memory/lessons.js';
 import type { CheckpointStore } from '../agent/checkpoint.js';
+import type { SubagentRunner } from '../agent/subagent.js';
 
 export interface ToolResult {
   /** What goes back into the model's context. Keep it tight — tokens are scarce locally. */
@@ -29,6 +30,8 @@ export interface ToolContext {
   memory: LessonStore | null;
   /** null when checkpointing is switched off. Mutating tools capture before writing. */
   checkpoint: CheckpointStore | null;
+  /** null when sub-agents are switched off, or inside a sub-agent (no nesting). */
+  subagent: SubagentRunner | null;
 }
 
 export interface Tool {

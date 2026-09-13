@@ -68,16 +68,16 @@ Every file, what it does, and why it exists. ~5,300 lines of TypeScript + 10 ski
 | `src/cli/repl.ts`       | 420   | Interactive REPL: readline, slash commands (skills, memory, checkpoints), `@file` mentions, `!shell`, Ctrl+C abort. |
 | `src/cli/prompt.ts`     | 40    | The y/n/always approval prompt, shared by REPL and one-shot mode.          |
 | `src/cli/mentions.ts`   | 67    | Expands `@path/to/file` into attached `<file>` blocks.                     |
-| `src/config.ts`         | 237   | Layered config: defaults → `.agent/config.json` → env → CLI. Loads `AGENTS.md`. |
+| `src/config.ts`         | 253   | Layered config: defaults → `.agent/config.json` → env → CLI. Loads `AGENTS.md`. |
 | `src/doctor.ts`         | 210   | Environment health check + RAM-aware model recommendation table.           |
 
 ### Agent core
 
 | File                         | Lines | Responsibility                                                       |
 | ---------------------------- | ----- | -------------------------------------------------------------------- |
-| `src/agent/loop.ts`          | 280   | **The agent loop.** Read this first. Compaction, plan injection, streaming, tool dispatch, loop breakers, step limit. |
-| `src/agent/runtime.ts`       | 320   | Stateful container across turns. `send()`, `setModel()`, `clearHistory()`, `undoLast()`, `compactNow()`, `statsLine()`. Owns the memory store, per-turn lesson recall, and the checkpoint lifecycle (`begin` before the loop, `finish` in a `finally`). |
-| `src/agent/context.ts`       | 223   | Builds the environment block (OS, git, stack, tree, scripts) and the system prompt. |
+| `src/agent/loop.ts`          | 284   | **The agent loop.** Read this first. Compaction, plan injection, streaming, tool dispatch, loop breakers, step limit. |
+| `src/agent/runtime.ts`       | 348   | Stateful container across turns. `send()`, `setModel()`, `clearHistory()`, `undoLast()`, `compactNow()`, `statsLine()`. Owns the memory store, per-turn lesson recall, and the checkpoint lifecycle (`begin` before the loop, `finish` in a `finally`). |
+| `src/agent/context.ts`       | 244   | Builds the environment block (OS, git, stack, tree, scripts) and the system prompt. |
 | `src/agent/compact.ts`       | 125   | Replaces old turns with a deterministic action log when near the context budget. |
 | `src/agent/stream-filter.ts` | 81    | Hides prose-JSON tool calls from the display while streaming.         |
 | `src/agent/plan.ts`          | 50    | `PlanStore` — the agent's todo list, rendered back into context.      |
@@ -116,13 +116,15 @@ Every file, what it does, and why it exists. ~5,300 lines of TypeScript + 10 ski
 | `src/skills/frontmatter.ts` | 109   | Hand-rolled YAML-subset parser (scalars, inline arrays, block lists). No `yaml` dependency. |
 | `src/skills/loader.ts`      | 179   | Discovers `SKILL.md` across bundled → user → project dirs, de-duplicates identical paths, derives name/description when frontmatter is missing, lists bundled resources. |
 | `src/skills/router.ts`      | 140   | Deterministic trigger scoring. Multi-word triggers outweigh single words; explicit cues ("use the X skill") are decisive; a bare skill name never hijacks a sentence. |
-| `src/skills/library.ts`     | 133   | Owns discovered skills + progressive disclosure: compact index for the prompt, capped on-demand bodies, loaded-set so nothing is paid for twice. |
+| `src/skills/library.ts`     | 147   | Owns discovered skills + progressive disclosure: compact index for the prompt, capped on-demand bodies, loaded-set so nothing is paid for twice. `spawn()` hands a sub-agent the same discovered skills with a *fresh* loaded-set, so the parent is never told a body is loaded when it only exists in the child's context. |
 | `skills/*/SKILL.md`         | 806   | The 10 built-in skills: `code`, `design`, `debug`, `refactor`, `test`, `review`, `security`, `docs`, `git`, `explain`. |
 
 ### Checkpoints (rollback for the agent's own edits)
 
 | File                        | Lines | Responsibility                                                     |
 | --------------------------- | ----- | ------------------------------------------------------------------ |
+| `src/agent/subagent.ts`     | 317   | **Context isolation.** `runSubagent()` builds a whole second agent — fresh message list, fresh `SessionState`, its own `SkillLibrary.spawn()`, a `readonly` gate for `explore` and the parent's gate for `work` — runs one `runTurn()` inside it, then folds its token spend back into the parent's totals and returns a capped report. Shares the parent's `CheckpointStore` and approval sets so there is exactly one rollback boundary and one approval story. The child registry drops `task` (no nesting) and `remember` (memory belongs to the conversation), and the child runs with `subagent: null`. Its UI is quiet but relays every event to the parent's listener, so the terminal prints dim nested lines and the browser draws a nested card. |
+| `src/tools/task.ts`         | 92    | The delegation tool: validates the brief (rejecting one too vague to delegate), calls `ctx.subagent`, and formats the report with a header of steps / tool calls / tokens / seconds. Deliberately dumb — all construction lives in the runtime, so disabling sub-agents means not registering this tool at all. |
 | `src/agent/checkpoint.ts`   | 375   | `CheckpointStore`: captures a file's bytes before a tool mutates it (first capture per turn wins), writes one manifest + a mirrored file tree per turn under `.agent/checkpoints/<id>/`, and restores a turn — deleting files the agent created — while checkpointing the state it leaves, so a rollback is itself reversible. Atomic `.tmp` + `rename` writes, path-escape checks on both the backup slot and the restore target, prune-to-`keep`, `clear()`, `sizeBytes()`. |
 
 ### Memory (cross-session learning)
@@ -149,17 +151,18 @@ Every file, what it does, and why it exists. ~5,300 lines of TypeScript + 10 ski
 | -------------------------- | ----- | ------------------------------------------------------------------- |
 | `src/safety/paths.ts`      | 90    | Workspace jail, sensitive-path detection, ignore lists, truncation, binary sniffing. |
 | `src/safety/permissions.ts`| 132   | `ask`/`auto`/`readonly` policy, hard-deny regex list, session-scoped "always" approvals. |
-| `src/ui/ui.ts`             | 287   | All output: streaming text, spinner, tool trace, diffs, approval hook. Injectable sink for tests. Every method also emits a typed `UIEvent` to an optional `listener` — that is how the web UI mirrors the agent without the core knowing about it. |
+| `src/ui/ui.ts`             | 317   | All output: streaming text, spinner, tool trace, diffs, approval hook. Injectable sink for tests. Every method also emits a typed `UIEvent` to an optional `listener` — that is how the web UI mirrors the agent without the core knowing about it. |
 | `src/util/ansi.ts`         | 36    | ANSI colour helpers. No `chalk`.                                     |
 | `src/util/diff.ts`         | 89    | LCS line diff with context collapsing.                               |
 | `src/util/session.ts`      | 29    | Per-session state: approvals, counters, plan, token totals.          |
 
-### Tests (231, no model required)
+### Tests (248, no model required)
 
 | File                        | Tests | Covers                                                              |
 | --------------------------- | ----- | ------------------------------------------------------------------- |
 | `tests/loop.test.ts`        | 11    | End-to-end agent runs: happy path, prose-JSON recovery, arg aliases, error feedback, loop breaker, readonly denial, catastrophic command block, real bash execution, step limit, plan injection. |
-| `tests/server.test.ts`      | 33    | `WebPrompter` (round-trip, timeout→deny, no-client default, `cancelAll`), static serving + path-traversal jail, 405/404s, `/api/state`, token auth, `/api/health`, a full turn over real SSE, late-joiner snapshots, the permission gate answered over HTTP (yes / no / expiry), mode + model switching, clear/undo/interrupt, memory CRUD and feedback, and the checkpoint endpoints (snapshot, the `checkpoint` event over SSE, restore by id and by prefix, restore-of-a-restore, the 404/400 paths, clear). |
+| `tests/server.test.ts`      | 34    | `WebPrompter` (round-trip, timeout→deny, no-client default, `cancelAll`), static serving + path-traversal jail, 405/404s, `/api/state`, token auth, `/api/health`, a full turn over real SSE, late-joiner snapshots, the permission gate answered over HTTP (yes / no / expiry), mode + model switching, clear/undo/interrupt, memory CRUD and feedback, and the checkpoint endpoints (snapshot, the `checkpoint` event over SSE, restore by id and by prefix, restore-of-a-restore, the 404/400 paths, clear). |
+| `tests/subagent.test.ts`    | 16    | The context-isolation measurement itself (two 4,000-char reads cost the parent <800 tokens and their bytes never appear in its transcript), token totals folding, `explore` refusing a write, `work` writing inside the *parent's* checkpoint and rolling back with it, no-nesting proved by recording the tool schema each generation was offered, `[sub-agent]` permission labelling, abort propagation, the step cap, report truncation, event relay order, `SkillLibrary.spawn()` isolation, the task tool's vague-brief refusal and disabled path, registration following `LCA_SUBAGENTS`, and the child prompt's read-only wording. |
 | `tests/checkpoint.test.ts`  | 25    | Capture/restore for modified and newly-created files, first-capture-wins across three writes to one file, capture with and without preloaded content, no-op turns leaving nothing on disk, `discard()`, manifest persistence and reload, newest-first listing, pruning, a crash-corrupted manifest, `clear()`, size accounting, restore-of-a-restore, the `restoredAt` marker surviving a reload, a missing backup leaving the file untouched, a `../` capture attempt that is dropped rather than written, dotted filenames, and six runtime integrations (write, edit, create-then-delete, read-only turn, an aborted turn still reversible, the config switch). |
 | `tests/memory.test.ts`      | 21    | Saving, dedup, empty-text refusal, JSONL persistence, truncated-line recovery, voting, forgetting, recall ranking (tags, limits, sunk memories), the injection block, the `remember` tool, and runtime integration (injection, `remember` registration, system prompt). |
 | `tests/skills.test.ts`      | 69    | Frontmatter parsing, discovery + override precedence, index compactness, body capping, the 23-case routing table, `use_skill` (load, no-double-pay, resource jail), auto-injection, `/clear` forgetting. |
@@ -243,6 +246,19 @@ presentation flags (`quiet`, `verbose`, TTY-ness) may change what is *printed*, 
 handshake. The permission bridge is what makes it sufficient: the blocking `await ui.ask()` inside
 the loop parks a promise in a map, and an HTTP call resolves it seconds later. **Timeouts deny** — an
 unattended web agent must never fall open.
+
+**Sub-agents are context isolation, not parallelism.** A laptop runs one local model at a time, so
+delegation never buys concurrency — it buys *capacity*. The valuable property is that twenty file reads
+happen in the child's window and only a capped report enters the parent's, which is why the isolation is
+asserted with a measurement (two 4,000-char reads must cost the parent under 800 tokens and their bytes
+must not appear in its transcript) rather than a structural claim. Three invariants keep the feature
+from becoming a hazard: **no nesting** (the child is never offered `task`, and runs with
+`subagent: null` — enforced twice so recursion is structurally impossible), **read-only by default**
+(`explore` gets a `readonly` gate whatever the parent's mode, so delegation can never escalate
+privilege), and **one rollback boundary** (the child shares the parent's `CheckpointStore`, because two
+interleaved undo histories is a thing no user can reason about). The tool itself is deliberately dumb:
+all construction lives in the runtime, so `LCA_SUBAGENTS=false` removes the tool from the model's schema
+entirely and the prompt stops mentioning it — you pay zero tokens for a feature you switched off.
 
 ---
 

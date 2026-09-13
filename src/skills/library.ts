@@ -51,6 +51,20 @@ export class SkillLibrary {
     return this.skills.length;
   }
 
+  /**
+   * A copy sharing the discovered skills but with its own loaded-set, and no
+   * disk re-scan. A sub-agent must not make the parent believe a skill body is
+   * already in *its* context: the loaded-set is per conversation, not per process.
+   */
+  spawn(): SkillLibrary {
+    const lib = new SkillLibrary(this.enabled, this.maxBodyChars);
+    lib.skills = this.skills;
+    lib.problems = this.problems;
+    lib.searchedFrom = this.searchedFrom;
+    for (const [name, skill] of this.byName) lib.byName.set(name, skill);
+    return lib;
+  }
+
   all(): Skill[] {
     return this.skills;
   }

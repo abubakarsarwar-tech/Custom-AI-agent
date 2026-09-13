@@ -130,6 +130,7 @@ export async function startRepl(rt: AgentRuntime, initialPrompt?: string): Promi
           skills: rt.skills,
           memory: rt.memory,
           checkpoint: rt.checkpoints,
+          subagent: null,
         },
       );
       ui.line(res.content);

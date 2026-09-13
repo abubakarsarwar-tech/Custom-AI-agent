@@ -151,6 +151,26 @@ function renderCheckpointLine(enabled?: boolean): string {
   );
 }
 
+/**
+ * Delegation guidance, built as plain lines rather than a nested template so the
+ * system-prompt template stays readable.
+ */
+function renderSubagentBlock(enabled?: boolean): string {
+  if (!enabled) return '';
+  return [
+    '<subagents>',
+    'task(prompt, kind) delegates a job to a sub-agent with its OWN fresh context window. Only its short report comes back to you — the files it read stay in its window, not yours.',
+    'Delegate when: answering needs many searches or many file reads ("find every place X is used"), or the question is self-contained and you do not need its workings.',
+    'Do NOT delegate when: the job needs this conversation, it is one file you could read yourself, or the user should watch you make the edit — do those yourself.',
+    'Rules: one job per call, they run one at a time, and the sub-agent cannot see this conversation or ask you anything. Write a complete brief: what to find, where to look, what the report must contain.',
+    'kind="explore" (default) is read-only. kind="work" may edit files, and each edit still asks the user for permission.',
+    'Never delegate to avoid doing the work, and never invent a report you did not receive.',
+    '</subagents>',
+    '',
+    '',
+  ].join('\n');
+}
+
 export function buildSystemPrompt(input: {
   modelName: string;
   repoContext: string;
@@ -163,6 +183,7 @@ export function buildSystemPrompt(input: {
   memoryEnabled?: boolean;
   memoryCount?: number;
   checkpointsEnabled?: boolean;
+  subagentsEnabled?: boolean;
 }): string {
   return `You are LCA (Local Code Agent), an interactive CLI coding agent built for software engineering.
 You run 100% on the user's own laptop through Ollama — model "${input.modelName}". Nothing is sent to the cloud.
@@ -200,7 +221,7 @@ ${renderCheckpointLine(input.checkpointsEnabled)}
 - If you are blocked or need a decision, ask one specific question instead of guessing.
 </output_style>
 
-${renderSkillsBlock(input)}${
+${renderSkillsBlock(input)}${renderSubagentBlock(input.subagentsEnabled)}${
   input.memoryEnabled
     ? `<memory>
 You have a persistent memory of this project (${input.memoryCount ?? 0} fact${(input.memoryCount ?? 0) === 1 ? '' : 's'} stored), kept in .agent/memory/lessons.jsonl.

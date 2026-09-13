@@ -8,6 +8,8 @@ import { ALL_TOOLS } from '../tools/registry.js';
 import { SkillLibrary } from '../skills/library.js';
 import { LessonStore } from '../memory/lessons.js';
 import { CheckpointStore, humanBytes, type Checkpoint, type RestoreResult } from './checkpoint.js';
+import { runSubagent, type SubagentRunner } from './subagent.js';
+import { taskTool } from '../tools/task.js';
 import { rememberTool } from '../tools/remember.js';
 import type { UI } from '../ui/ui.js';
 import { newSession, type SessionState } from '../util/session.js';
@@ -47,6 +49,8 @@ export class AgentRuntime {
   memory: LessonStore | null;
   /** Per-turn file snapshots. null when disabled. */
   checkpoints: CheckpointStore | null;
+  /** Delegation. null when sub-agents are disabled. */
+  readonly subagentRunner: SubagentRunner | null;
   readonly permissions: PermissionGate;
   readonly session: SessionState;
   messages: Message[] = [];
@@ -83,6 +87,28 @@ export class AgentRuntime {
     }
     this.session = newSession(opts.config);
     this.permissions = new PermissionGate(opts.config.permissionMode, this.session, opts.ui);
+    // Read the live fields at call time, so setModel()/mode changes apply to
+    // sub-agents spawned afterwards without rebuilding anything.
+    this.subagentRunner = opts.config.subagentsEnabled
+      ? (req) =>
+          runSubagent(
+            {
+              provider: this.provider,
+              config: this.config,
+              registry: this.registry,
+              ui: this.ui,
+              skills: this.skills,
+              repoContext: this.repoContext,
+              session: this.session,
+              permissions: this.permissions,
+              checkpoints: this.checkpoints,
+            },
+            req,
+          )
+      : null;
+    if (this.subagentRunner && !this.registry.has(taskTool.name)) {
+      this.registry.register(taskTool);
+    }
   }
 
   static async create(opts: RuntimeOptions): Promise<AgentRuntime> {
@@ -117,6 +143,7 @@ export class AgentRuntime {
       memoryEnabled: Boolean(this.memory),
       memoryCount: this.memory?.count ?? 0,
       checkpointsEnabled: Boolean(this.checkpoints),
+      subagentsEnabled: Boolean(this.subagentRunner),
     });
     const head: Message = { role: 'system', content: this.systemPrompt };
     this.messages = [head, ...this.messages.filter((m) => m.role !== 'system')];
@@ -275,6 +302,7 @@ export class AgentRuntime {
           skills: this.skills,
           memory: this.memory,
           checkpoint: this.checkpoints,
+          subagent: this.subagentRunner,
         },
         signal,
       );

@@ -423,6 +423,77 @@ describe('a turn through the API', () => {
   }, 20_000);
 });
 
+/* ---------------- sub-agents over SSE ---------------- */
+
+const delegateTurns: MockTurn[] = [
+  {
+    text: 'Sending a sub-agent to survey the workspace.',
+    toolCalls: [
+      {
+        name: 'task',
+        arguments: { prompt: 'Survey this workspace and report what is actually in it.', kind: 'explore' },
+      },
+    ],
+  },
+  // these two belong to the CHILD
+  { text: '', toolCalls: [{ name: 'list_dir', arguments: { path: '.' } }] },
+  { text: 'Survey: the workspace is empty apart from .agent/.' },
+  // back to the parent
+  { text: 'All done.' },
+];
+
+describe('sub-agents over SSE', () => {
+  it('streams the lifecycle, the child tool calls, and only the report into history', async () => {
+    const h = await serve(delegateTurns, { permissionMode: 'auto' });
+    const sse = openSse(h);
+    await sse.waitFor('snapshot');
+    await post(h, '/api/chat', { text: 'survey the workspace' });
+    await sse.waitFor('turn_end', 20_000);
+
+    const types = sse.events.map((e) => e.type);
+    const startAt = types.indexOf('subagent_start');
+    const endAt = types.indexOf('subagent_end');
+    expect(startAt).toBeGreaterThan(-1);
+    expect(endAt).toBeGreaterThan(startAt);
+
+    const start = sse.events[startAt]!.data;
+    expect(start.kind).toBe('explore');
+    expect(String(start.prompt)).toMatch(/Survey this workspace/);
+    // clamped to min(subagentMaxSteps, maxSteps); the test harness runs maxSteps: 8
+    expect(Number(start.maxSteps)).toBeGreaterThan(0);
+    expect(Number(start.maxSteps)).toBeLessThanOrEqual(12);
+
+    const end = sse.events[endAt]!.data;
+    expect(end.ok).toBe(true);
+    expect(end.kind).toBe('explore');
+    expect(Number(end.steps)).toBeGreaterThan(0);
+    expect(Number(end.tokens)).toBeGreaterThan(0);
+
+    // the child's list_dir was relayed between the two lifecycle events
+    const nested = types.slice(startAt, endAt);
+    expect(nested).toContain('tool_start');
+    expect(nested).toContain('tool_end');
+
+    // The report itself rides the task tool's result, which the browser sees as a
+    // tool_end preview. History stays user/assistant only — that is deliberate.
+    const taskEnd = sse.events.find((e) => e.type === 'tool_end' && e.data.name === 'task');
+    expect(taskEnd).toBeTruthy();
+    expect(taskEnd!.data.ok).toBe(true);
+    expect(String(taskEnd!.data.preview)).toMatch(/sub-agent report · explore/);
+    expect(String(taskEnd!.data.preview)).toContain('Survey: the workspace is empty');
+
+    const st = ((await (await get(h, '/api/state')).json()) as {
+      history: Array<{ role: string; text: string }>;
+    }).history;
+    const joined = st.map((m) => m.text).join('\n');
+    expect(joined).toContain('Sending a sub-agent to survey the workspace.');
+    expect(joined).toContain('All done.');
+    // the child's raw listing never enters the conversation transcript
+    expect(joined).not.toContain('Survey: the workspace is empty');
+    sse.close();
+  }, 25_000);
+});
+
 /* ---------------- the permission gate over HTTP ---------------- */
 
 describe('permissions through the browser', () => {

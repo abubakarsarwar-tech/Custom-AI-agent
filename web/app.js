@@ -25,6 +25,8 @@ const state = {
   runningTools: [],
   permissionQueue: [],
   activePermission: null,
+  subagentEl: null,
+  subagentBody: null,
   stickToBottom: true,
   models: [],
   injectedLessons: [],
@@ -171,6 +173,11 @@ function renderDiffish(text) {
 
 /* ---------------- transcript ---------------- */
 
+/** Where new transcript content belongs: inside a sub-agent, or at top level. */
+function flowRoot() {
+  return state.subagentBody ?? el.transcript;
+}
+
 function hideWelcome() {
   if (el.welcome && el.welcome.parentNode) el.welcome.remove();
 }
@@ -188,10 +195,11 @@ function addUserMessage(text) {
 function addAssistantMessage() {
   hideWelcome();
   const wrap = make('div', 'msg msg-assistant');
-  wrap.appendChild(make('div', 'msg-head', 'LCA'));
+  const label = state.subagentBody ? 'sub-agent' : 'LCA';
+  wrap.appendChild(make('div', 'msg-head', label));
   const bubble = make('div', 'bubble');
   wrap.appendChild(bubble);
-  el.transcript.appendChild(wrap);
+  flowRoot().appendChild(wrap);
   state.streamEl = bubble;
   state.lastAssistantEl = wrap;
   state.streamText = '';
@@ -232,10 +240,12 @@ function toolsContainer() {
   if (!state.toolsEl || !state.toolsEl.isConnected) {
     hideWelcome();
     state.toolsEl = make('div', 'tools');
-    state.toolsEl.style.maxWidth = '900px';
-    state.toolsEl.style.width = '100%';
-    state.toolsEl.style.margin = '0 auto';
-    el.transcript.appendChild(state.toolsEl);
+    if (!state.subagentBody) {
+      state.toolsEl.style.maxWidth = '900px';
+      state.toolsEl.style.width = '100%';
+      state.toolsEl.style.margin = '0 auto';
+    }
+    flowRoot().appendChild(state.toolsEl);
   }
   return state.toolsEl;
 }
@@ -302,7 +312,7 @@ function addNoteLine(text, kind) {
   hideWelcome();
   const line = make('div', 'note-line', text);
   line.dataset.kind = kind;
-  el.transcript.appendChild(line);
+  flowRoot().appendChild(line);
   scrollIfSticky();
 }
 
@@ -318,10 +328,10 @@ function showThinking(label) {
     dots.appendChild(make('span'));
     thinkingEl.appendChild(dots);
     thinkingEl.appendChild(make('span', 'thinking-label', label));
-    el.transcript.appendChild(thinkingEl);
+    flowRoot().appendChild(thinkingEl);
   } else {
     thinkingEl.querySelector('.thinking-label').textContent = label;
-    el.transcript.appendChild(thinkingEl); // keep it last
+    flowRoot().appendChild(thinkingEl); // keep it last
   }
   scrollIfSticky();
 }
@@ -714,6 +724,73 @@ function renderBanner() {
   el.banner.style.borderColor = banners.mode ? 'rgba(248,113,113,.32)' : '';
 }
 
+/* ---------------- sub-agents ---------------- */
+
+function openSubagent(data) {
+  closeAssistantStream();
+  hideThinking();
+
+  const card = make('div', 'subagent');
+  card.dataset.state = 'running';
+  card.dataset.open = 'true';
+
+  const head = document.createElement('button');
+  head.type = 'button';
+  head.className = 'subagent-head';
+  head.setAttribute('aria-expanded', 'true');
+  head.appendChild(make('span', 'subagent-mark', '⧗'));
+  head.appendChild(make('span', 'subagent-kind', String(data.kind || 'explore')));
+  head.appendChild(make('span', 'subagent-prompt', String(data.prompt || '')));
+  head.appendChild(make('span', 'subagent-meta', `≤${data.maxSteps ?? '?'} steps`));
+  head.title = 'A sub-agent with its own context window. Only its report returns to the conversation.';
+  head.addEventListener('click', () => {
+    const open = card.dataset.open !== 'true';
+    card.dataset.open = String(open);
+    head.setAttribute('aria-expanded', String(open));
+  });
+
+  const body = make('div', 'subagent-body');
+  card.appendChild(head);
+  card.appendChild(body);
+
+  // Append at top level: the card is a peer of the parent's messages.
+  const root = state.subagentBody ? state.subagentBody : el.transcript;
+  root.appendChild(card);
+
+  state.subagentEl = card;
+  state.subagentBody = body;
+  state.toolsEl = null;
+  setBusy(true, `sub-agent (${data.kind || 'explore'})…`);
+  scrollIfSticky();
+}
+
+function closeSubagent(data) {
+  const card = state.subagentEl;
+  if (!card) return;
+
+  card.dataset.state = data.ok === false ? 'error' : 'done';
+  const meta = card.querySelector('.subagent-meta');
+  const bits = [];
+  if (data.steps !== undefined) bits.push(`${data.steps} steps`);
+  if (data.toolCalls !== undefined) bits.push(`${data.toolCalls} tools`);
+  if (data.tokens !== undefined) bits.push(`~${data.tokens} tok back`);
+  if (data.error) bits.push('failed');
+  if (meta) meta.textContent = bits.join(' · ') || 'done';
+
+  // Collapse by default once finished: the report is in the parent's message,
+  // and the workings are one click away.
+  card.dataset.open = 'false';
+  const head = card.querySelector('.subagent-head');
+  if (head) head.setAttribute('aria-expanded', 'false');
+
+  state.subagentEl = null;
+  state.subagentBody = null;
+  state.toolsEl = null;
+  hideThinking();
+  setBusy(true, 'working…');
+  scrollIfSticky();
+}
+
 /* ---------------- permission dialog ---------------- */
 
 function enqueuePermission(req) {
@@ -1011,6 +1088,8 @@ function applySnapshot(snap) {
   state.toolsEl = null;
   state.lastAssistantEl = null;
   state.runningTools = [];
+  state.subagentEl = null;
+  state.subagentBody = null;
   hideThinking();
 
   if (!snap.history?.length) {
@@ -1092,6 +1171,14 @@ function handleEvent(type, data) {
       void refreshCheckpoints();
       break;
 
+    case 'subagent_start':
+      openSubagent(data);
+      break;
+
+    case 'subagent_end':
+      closeSubagent(data);
+      break;
+
     case 'permission_request':
       enqueuePermission(data);
       break;
@@ -1111,6 +1198,7 @@ function handleEvent(type, data) {
       hideThinking();
       state.runningTools = [];
       state.toolsEl = null;
+      if (state.subagentEl) closeSubagent({ ok: false, error: 'turn ended' });
       el.stats.textContent = data.stats ?? '';
       setBusy(false);
       addFeedbackRow();
@@ -1162,7 +1250,8 @@ function connect() {
   const types = [
     'snapshot', 'assistant_delta', 'assistant_end', 'tool_start', 'tool_end',
     'spinner', 'spinner_stop', 'note', 'warn', 'error', 'plan', 'skill_loaded',
-    'permission_request', 'permission_response', 'turn_end', 'checkpoint', 'log',
+    'permission_request', 'permission_response', 'turn_end', 'checkpoint',
+    'subagent_start', 'subagent_end', 'log',
   ];
   for (const t of types) {
     source.addEventListener(t, (e) => {

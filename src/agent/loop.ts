@@ -7,6 +7,7 @@ import type { UI } from '../ui/ui.js';
 import type { SkillLibrary } from '../skills/library.js';
 import type { LessonStore } from '../memory/lessons.js';
 import type { CheckpointStore } from './checkpoint.js';
+import type { SubagentRunner } from './subagent.js';
 import type { SessionState } from '../util/session.js';
 import { compactHistory } from './compact.js';
 import { StreamEcho } from './stream-filter.js';
@@ -23,6 +24,7 @@ export interface AgentDeps {
   skills: SkillLibrary | null;
   memory: LessonStore | null;
   checkpoint: CheckpointStore | null;
+  subagent: SubagentRunner | null;
 }
 
 export interface TurnResult {
@@ -59,7 +61,8 @@ export async function runTurn(
   deps: AgentDeps,
   signal: AbortSignal,
 ): Promise<TurnResult> {
-  const { provider, registry, permissions, ui, config, session, skills, memory, checkpoint } = deps;
+  const { provider, registry, permissions, ui, config, session, skills, memory, checkpoint, subagent } =
+    deps;
 
   messages.push({ role: 'user', content: userText });
 
@@ -221,6 +224,7 @@ export async function runTurn(
         skills,
         memory,
         checkpoint,
+        subagent,
       });
       const ms = Date.now() - t0;
       session.totals.toolMs += ms;

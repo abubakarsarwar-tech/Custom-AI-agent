@@ -141,7 +141,7 @@ npm install
 
 npm run doctor      # 1. health check: Node, RAM, Ollama, model, tool support
 npm run demo        # 2. full agent run with NO model (scripted mock provider)
-npm test            # 3. 231 tests, also no model needed
+npm test            # 3. 248 tests, also no model needed
 npm run dev         # 4. the real thing, in your terminal
 npm run serve:demo  # 5. the same agent in your BROWSER, still no model needed
 ```
@@ -468,6 +468,61 @@ without bound.
 
 ---
 
+### Layer 10 — Sub-agents (`src/agent/subagent.ts`, `src/tools/task.ts`)
+
+Small context windows are the real ceiling on a local agent. Not intelligence — capacity. A 7B model
+with `num_ctx=8192` can hold your system prompt, a few files and maybe ten tool results before it starts
+losing the beginning of the conversation. Compaction (summarising old turns) helps, but it throws away
+detail. **Context isolation** does not: you spend the tokens somewhere else and keep the answer.
+
+That is what `task` does. The parent agent hands a self-contained job to a child agent with a brand-new
+message list. The child reads twenty files. The parent receives one short report.
+
+```
+runSubagent(deps, { prompt, kind, signal })
+  ├─ child SessionState        fresh plan + counters (folded back into the parent afterwards)
+  ├─ child ToolRegistry        parent's tools MINUS `task` (no nesting) MINUS `remember`
+  ├─ child SkillLibrary        deps.skills.spawn() — same skills, its own loaded-set
+  ├─ child PermissionGate      readonly for `explore`, the parent's mode for `work`
+  ├─ shared CheckpointStore    a child's writes roll back with the parent's turn
+  ├─ shared approval Sets      "always allow" applies to both; prompts are labelled [sub-agent]
+  └─ child UI                  quiet, but every event is relayed to the parent's listener
+```
+
+Four decisions worth copying:
+
+**1. The tool stays dumb.** `task.ts` does almost nothing: it validates the brief, calls
+`ctx.subagent(...)`, and formats the report. All construction lives in the runtime, which owns the
+provider, the registry and the session. A tool that builds agents cannot be tested, and cannot be
+disabled cleanly. Here, disabling sub-agents means `ctx.subagent === null` and not registering the tool
+— the model never even sees it in its schema.
+
+**2. No nesting, enforced twice.** The child's registry has no `task` tool, *and* the child runs with
+`deps.subagent = null`. Either alone would be enough; both together mean a runaway recursion is
+structurally impossible rather than merely discouraged. The test proves it by recording the tool schema
+each generation was offered.
+
+**3. Read-only by default.** `explore` gets a `readonly` PermissionGate regardless of the parent's mode.
+Delegation must never be a way to escalate: if you are running in `ask` mode, a sub-agent cannot be the
+thing that quietly writes to your repo. `work` inherits the parent's mode and every one of its prompts
+is labelled `[sub-agent]`, so you always know which agent is asking.
+
+**4. One undo boundary.** The child shares the parent's `CheckpointStore`, so a `work` sub-agent's
+writes land inside the parent turn's checkpoint and `/restore` undoes them together. Give the child its
+own store and you now have two interleaved rollback histories — a genuinely confusing thing to explain
+to a user who just wants their files back.
+
+What comes back is capped (`subagentReportChars`) and the child's step count is capped
+(`subagentMaxSteps`, also clamped to `maxSteps`). If either limit is hit, the report *says so* — a
+truncated report that pretends to be complete is worse than no report.
+
+Sub-agents are **not** parallelism. One laptop, one model, one queue. If you tell a small model that
+delegation makes things faster, it will delegate everything and get slower. The tool description says
+"context isolation" and names the cases where you should *not* delegate — that negative guidance matters
+more than the positive kind.
+
+---
+
 ## 5. Build your own from scratch
 
 Do this even if you just want to use this repo. Writing the 90-line version is what makes the rest
@@ -747,7 +802,7 @@ What this repo has today, and what to build next:
 - [x] Memory: cross-session lessons, keyword recall, voting, the `remember` tool
 - [x] Web UI + HTTP API: `lca serve`, SSE streaming, browser permission dialog, multi-tab
 - [x] Checkpointing: every file change is snapshotted per turn, `/restore` rolls it back reversibly
-- [x] Mock provider + 231 tests that need no model
+- [x] Mock provider + 248 tests that need no model
 
 **Next, in the order I would build them**
 

@@ -27,7 +27,17 @@ export type UIEvent =
   | { type: 'checkpoint'; id: string; label: string; files: string[]; createdAt: string }
   | { type: 'plan'; items: Array<{ content: string; status: string }> }
   | { type: 'skill_loaded'; name: string }
-  | { type: 'log'; text: string };
+  | { type: 'log'; text: string }
+  | { type: 'subagent_start'; prompt: string; kind: string; maxSteps: number }
+  | {
+      type: 'subagent_end';
+      ok: boolean;
+      kind: string;
+      steps?: number;
+      toolCalls?: number;
+      tokens?: number;
+      error?: string;
+    };
 
 export type UIListener = (event: UIEvent) => void;
 
@@ -123,6 +133,26 @@ export class UI {
 
   emitPermissionAnswer(id: string, answer: Answer): void {
     this.emit({ type: 'permission_response', id, answer });
+  }
+
+  /** Forward an event that came from somewhere else (a sub-agent's UI). */
+  relay(event: UIEvent): void {
+    this.emit(event);
+  }
+
+  emitSubagentStart(info: { prompt: string; kind: string; maxSteps: number }): void {
+    this.emit({ type: 'subagent_start', ...info });
+  }
+
+  emitSubagentEnd(info: {
+    ok: boolean;
+    kind: string;
+    steps?: number;
+    toolCalls?: number;
+    tokens?: number;
+    error?: string;
+  }): void {
+    this.emit({ type: 'subagent_end', ...info });
   }
 
   emitCheckpoint(cp: { id: string; label: string; files: Array<{ rel: string }>; createdAt: string }): void {

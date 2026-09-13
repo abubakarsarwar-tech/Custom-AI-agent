@@ -81,6 +81,7 @@ export async function makeContext(
       skills: null,
       memory,
       checkpoint: null,
+      subagent: null,
     },
     cleanup: async () => {},
   };
